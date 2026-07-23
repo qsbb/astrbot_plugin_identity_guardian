@@ -10,6 +10,28 @@ from typing import Any
 
 from astrbot.api import logger
 
+# 诊断时只打印这几个关键参数，避免大对象或敏感信息
+_DIAG_KEYS = (
+    "group_id",
+    "user_id",
+    "message_id",
+    "flag",
+    "sub_type",
+    "enable",
+    "approve",
+)
+
+
+def _safe_params(params: dict) -> str:
+    """提取关键诊断参数，便于日志排查。"""
+    if not params:
+        return "{}"
+    parts = []
+    for key in _DIAG_KEYS:
+        if key in params:
+            parts.append(f"{key}={params[key]!r}")
+    return "{" + ", ".join(parts) + "}" if parts else "(non-diag)"
+
 
 class OneBotClient:
     """OneBot V11 API 调用封装。"""
@@ -21,11 +43,14 @@ class OneBotClient:
         """统一封装 call_action，处理超时与错误。
 
         返回 API 响应 data 字段，失败返回 None。
+        查询类失败降级为 debug（上层有 fallback），写操作失败保留 warning。
         """
         bot = getattr(event, "bot", None)
         if bot is None:
             logger.warning("[idg] no bot available for action %s", action)
             return None
+        # 查询类动作失败时上层有 fallback，降级为 debug 避免刷屏
+        is_query = action.startswith("get_") or action in ("get_login_info",)
         try:
             resp = await asyncio.wait_for(
                 bot.call_action(action, **params), timeout=self.timeout
@@ -33,16 +58,28 @@ class OneBotClient:
             if isinstance(resp, dict):
                 if resp.get("status") == "ok":
                     return resp.get("data")
-                logger.warning(
-                    "[idg] action %s failed: %s", action, resp.get("msg", "")
+                msg = resp.get("msg") or resp.get("wording") or "unknown error"
+                log = logger.debug if is_query else logger.warning
+                log(
+                    "[idg] action %s failed: %s | params=%s",
+                    action,
+                    msg,
+                    _safe_params(params),
                 )
                 return None
             return resp
         except asyncio.TimeoutError:
-            logger.warning("[idg] action %s timed out", action)
+            log = logger.debug if is_query else logger.warning
+            log("[idg] action %s timed out | params=%s", action, _safe_params(params))
             return None
         except Exception as exc:
-            logger.warning("[idg] action %s error: %s", action, exc)
+            log = logger.debug if is_query else logger.warning
+            log(
+                "[idg] action %s error: %s | params=%s",
+                action,
+                exc,
+                _safe_params(params),
+            )
             return None
 
     async def get_group_member_info(
