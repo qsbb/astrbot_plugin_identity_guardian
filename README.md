@@ -90,10 +90,12 @@ pip install -r requirements.txt
 | 配置项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `enabled` | bool | `true` | 插件总开关 |
-| `owner_users` | list | `[]` | bot 主人 QQ 号列表，用于建立主人关系，不依赖聊天文本自称 |
-| `friendly_users` | list | `[]` | 额外友好用户 QQ 号列表（群主和管理员自动识别） |
-| `protected_users` | list | `[]` | 强保护用户，禁止被踢出、长时禁言及批量处罚 |
+| `owner_users` | list<string> | `[]` | bot 主人 QQ 号列表（纯数字字符串），用于建立主人关系，不依赖聊天文本自称。例如 `["123456", "789012"]` |
+| `friendly_users` | list<string> | `[]` | 额外友好用户 QQ 号列表（纯数字字符串）。群主和管理员可按平台身份自动识别，无需重复填写 |
+| `protected_users` | list<string> | `[]` | 强保护用户 QQ 号列表（纯数字字符串），禁止被踢出、长时禁言及批量处罚 |
 | `log_level` | string | `INFO` | 日志级别：DEBUG / INFO / WARNING / ERROR |
+
+> 注：`owner_users` / `friendly_users` / `protected_users` / `blacklist_users` 填写的是 **QQ 号**（OneBot 平台 ID，纯数字字符串），非 AstrBot 内部 UID。代码中通过 `event.get_sender_id()` 比对，aiocqhttp 平台返回的 sender_id 即 QQ 号。
 
 ### 互动与处罚
 
@@ -104,7 +106,7 @@ pip install -r requirements.txt
 | `max_mute_seconds` | int | `1800` | LLM 无法超过此值 |
 | `confirm_mute_threshold` | int | `3600` | 需人工确认的禁言时长阈值（秒） |
 | `auto_confirm_threshold` | string | `mute_short` | 自动执行的最高处罚档位：warn / mute_short / mute_long / delete / kick |
-| `blacklist_users` | list | `[]` | 永久黑名单（触发即踢） |
+| `blacklist_users` | list<string> | `[]` | 永久黑名单 QQ 号列表（纯数字字符串），触发即踢 |
 | `action_cooldown_seconds` | int | `60` | 同一用户同一操作冷却（秒） |
 | `circuit_breaker_threshold` | int | `10` | 全局熔断阈值（1 小时内管理操作总数） |
 
@@ -113,7 +115,7 @@ pip install -r requirements.txt
 | 配置项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `auto_moderate` | bool | `false` | 启用独立 LLM 内容审核（第二层）。若已安装其他防注入 / 内容过滤插件，可关闭此项避免重复审核 |
-| `moderation_rules` | list | `[]` | 违规关键词正则列表（第一层预筛），命中即固定处罚不经 LLM |
+| `moderation_rules` | list<string> | `[]` | 违规关键词正则列表（第一层预筛），命中即固定处罚不经 LLM。例如 `["加我微信.*", "免费领.*"]` |
 | `spam_threshold` | int | `5` | 刷屏阈值（条 / 10 秒，0 = 关闭） |
 | `manual_threshold` | float | `0.6` | 内容审核置信度低于此值时不自动处罚 |
 | `cross_group_violation` | bool | `false` | 违规历史是否跨群共享 |
@@ -130,9 +132,9 @@ pip install -r requirements.txt
 | 配置项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `join_audit_mode` | string | `off` | 入群审核模式：off / approve_only / notify_only |
-| `join_questions` | list | `[]` | 入群问答配置，对象数组 `[{question, answers: []}]` |
+| `join_questions` | list<object> | `[]` | 入群问答配置，对象数组，每项含 `question`（问题字符串）和 `answers`（答案字符串数组）。例如 `[{"question": "本群是做什么的", "answers": ["技术交流", "编程讨论"]}]` |
 | `join_approve_threshold` | float | `0.9` | 自动通过的最低置信度 |
-| `audit_notify_targets` | list | `[]` | 审核人工通知目标列表（unified_msg_origin） |
+| `audit_notify_targets` | list<string> | `[]` | 审核人工通知目标列表（AstrBot 会话 ID，unified_msg_origin 格式）。例如 `["aiocqhttp:GroupMessage:123456"]` |
 | `pending_ttl_hours` | int | `24` | 待审请求保留时长（小时） |
 
 ### 知识库联动
@@ -147,7 +149,7 @@ pip install -r requirements.txt
 | 配置项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `audit_llm_provider` | string | `""` | 审核用 LLM Provider（留空则回退主对话 LLM），可填便宜模型降低成本 |
-| `confirm_notify_targets` | list | `[]` | 二次确认通知目标列表 |
+| `confirm_notify_targets` | list<string> | `[]` | 二次确认通知目标列表（AstrBot 会话 ID，unified_msg_origin 格式） |
 | `welcome_bot_speak` | bool | `false` | bot 进群是否主动发言 |
 | `welcome_template` | string | `""` | bot 进群发言模板 |
 | `identity_refresh_interval` | int | `1800` | 身份刷新间隔（秒） |
