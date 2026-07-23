@@ -9,8 +9,8 @@ author: Justice-ocr
 astrbot_version: ">=4.17.0,<5.0.0"
 support_platforms:
   - aiocqhttp
-repo: ""
-homepage: ""
+repo: "https://github.com/qsbb/astrbot_plugin_identity_guardian"
+homepage: "https://github.com/qsbb/astrbot_plugin_identity_guardian"
 tags:
   - identity
   - group-management
