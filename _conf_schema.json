@@ -1,0 +1,193 @@
+{
+  "enabled": {
+    "description": "插件总开关",
+    "type": "bool",
+    "default": true,
+    "obvious_hint": true
+  },
+  "owner_users": {
+    "description": "[关系] bot 主人 QQ 号列表",
+    "type": "list",
+    "default": [],
+    "obvious_hint": true,
+    "hint": "用于建立主人关系，不依赖聊天文本自称。格式：['123456', '789012']"
+  },
+  "friendly_users": {
+    "description": "[关系] 额外友好用户 QQ 号列表",
+    "type": "list",
+    "default": [],
+    "hint": "群主和管理员可按平台身份自动识别，无需重复填写。此列表用于额外标记友好用户。"
+  },
+  "protected_users": {
+    "description": "[安全] 强保护用户 QQ 号列表",
+    "type": "list",
+    "default": [],
+    "obvious_hint": true,
+    "hint": "强保护用户禁止被踢出、长时禁言及批量处罚。若开启玩笑禁言，仅对专用短时禁言例外生效。"
+  },
+  "allow_playful_mute_protected": {
+    "description": "[互动] 允许对主人/强保护用户进行玩笑式短禁言",
+    "type": "bool",
+    "default": false,
+    "hint": "仅影响 mute_current_sender，不解除踢出、长禁言等强保护。"
+  },
+  "playful_mute_max_seconds": {
+    "description": "[互动] 玩笑式禁言最大时长（秒）",
+    "type": "int",
+    "default": 60,
+    "hint": "必须小于普通 max_mute_seconds，建议 30-120 秒。"
+  },
+  "max_mute_seconds": {
+    "description": "最大禁言时长（秒）",
+    "type": "int",
+    "default": 1800,
+    "hint": "LLM 无法超过此值"
+  },
+  "confirm_mute_threshold": {
+    "description": "需人工确认的禁言时长阈值（秒）",
+    "type": "int",
+    "default": 3600
+  },
+  "auto_confirm_threshold": {
+    "description": "自动执行的最高处罚档位",
+    "type": "string",
+    "default": "mute_short",
+    "options": ["warn", "mute_short", "mute_long", "delete", "kick"]
+  },
+  "blacklist_users": {
+    "description": "永久黑名单（触发即踢）",
+    "type": "list",
+    "default": []
+  },
+  "auto_moderate": {
+    "description": "[审核] 启用独立 LLM 内容审核（第二层）",
+    "type": "bool",
+    "default": false,
+    "obvious_hint": true,
+    "hint": "开启后未命中规则的群消息会调用独立审核 LLM 判断是否违规。与主对话 LLM 完全隔离，无注入风险。若已安装其他防注入/内容过滤插件，可关闭此项避免重复审核。"
+  },
+  "moderation_rules": {
+    "description": "[审核] 违规关键词正则列表（第一层预筛）",
+    "type": "list",
+    "default": [],
+    "hint": "命中即固定处罚，不经 LLM。如 ['加我微信.*', '免费领.*']。留空则关闭关键词预筛。"
+  },
+  "spam_threshold": {
+    "description": "[审核] 刷屏阈值（条/10秒，0=关闭）",
+    "type": "int",
+    "default": 5,
+    "hint": "同一用户 10 秒内消息数超此值视为刷屏，直接禁言不经 LLM。设为 0 关闭。"
+  },
+  "enable_api_guard": {
+    "description": "[安全] 启用 API 层硬拦截（第三层护栏）",
+    "type": "bool",
+    "default": true,
+    "obvious_hint": true,
+    "hint": "在管理 API 真正执行前校验白名单、频率、批量、熔断。命中即阻断。强烈建议始终开启。"
+  },
+  "join_audit_mode": {
+    "description": "入群审核模式",
+    "type": "string",
+    "default": "off",
+    "options": ["off", "approve_only", "notify_only"],
+    "hint": "approve_only 仅高置信度正确时自动通过；notify_only 仅通知不自动通过；off 完全不处理。"
+  },
+  "join_questions": {
+    "description": "入群问答配置",
+    "type": "list",
+    "default": [],
+    "hint": "对象数组：[{question, answers:[]}]"
+  },
+  "join_approve_threshold": {
+    "description": "入群申请自动通过的最低置信度",
+    "type": "float",
+    "default": 0.9,
+    "hint": "仅 verdict=correct 且达到此阈值才自动通过。"
+  },
+  "enable_active_learner_recall": {
+    "description": "[联动] 入群审核查询 active_learner 知识库",
+    "type": "bool",
+    "default": false,
+    "hint": "联动不可用或没有证据时保持待审，不自动拒绝。"
+  },
+  "active_learner_scope": {
+    "description": "[联动] 知识检索范围",
+    "type": "string",
+    "default": "group",
+    "options": ["group", "global"]
+  },
+  "manual_threshold": {
+    "description": "内容审核置信度低于此值时不自动处罚",
+    "type": "float",
+    "default": 0.6
+  },
+  "audit_llm_provider": {
+    "description": "审核用 LLM Provider（留空则回退主对话 LLM）",
+    "type": "string",
+    "_special": "select_provider",
+    "default": "",
+    "hint": "用于内容审核与入群问答裁决，可填便宜模型降低成本"
+  },
+  "audit_notify_targets": {
+    "description": "审核人工通知目标列表（unified_msg_origin）",
+    "type": "list",
+    "default": [],
+    "hint": "支持多个目标，如 ['aiocqhttp:GroupMessage:123456']"
+  },
+  "confirm_notify_targets": {
+    "description": "二次确认通知目标列表",
+    "type": "list",
+    "default": []
+  },
+  "pending_ttl_hours": {
+    "description": "待审请求保留时长（小时）",
+    "type": "int",
+    "default": 24
+  },
+  "cross_group_violation": {
+    "description": "违规历史是否跨群共享",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后用户在 A 群违规记录在 B 群也可见"
+  },
+  "enable_set_admin_revoke": {
+    "description": "是否允许撤销管理员操作",
+    "type": "bool",
+    "default": false,
+    "obvious_hint": true,
+    "hint": "set_group_admin 默认只允许任命(enable=true)，开启后才允许撤销"
+  },
+  "welcome_bot_speak": {
+    "description": "bot 进群是否主动发言",
+    "type": "bool",
+    "default": false
+  },
+  "welcome_template": {
+    "description": "bot 进群发言模板",
+    "type": "string",
+    "default": ""
+  },
+  "identity_refresh_interval": {
+    "description": "身份刷新间隔（秒）",
+    "type": "int",
+    "default": 1800
+  },
+  "action_cooldown_seconds": {
+    "description": "同一用户同一操作冷却（秒）",
+    "type": "int",
+    "default": 60
+  },
+  "circuit_breaker_threshold": {
+    "description": "[安全] 全局熔断阈值（1小时内管理操作总数）",
+    "type": "int",
+    "default": 10,
+    "obvious_hint": true,
+    "hint": "1小时内管理操作总数超过此值时自动停用所有高风险工具。需 /idg reset_breaker 手动恢复。"
+  },
+  "log_level": {
+    "description": "日志级别",
+    "type": "string",
+    "default": "INFO",
+    "options": ["DEBUG", "INFO", "WARNING", "ERROR"]
+  }
+}

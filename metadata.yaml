@@ -1,0 +1,20 @@
+name: astrbot_plugin_identity_guardian
+display_name: 身份守护者
+short_desc: QQ 群身份与关系感知行动插件
+desc: >
+  动态识别 bot、发送者与目标身份及关系，向 LLM 注入受控行动边界，
+  并提供自助动作、互动反应、群信息管理和仅自动通过的入群审核能力。
+version: v0.1.0
+author: Justice-ocr
+astrbot_version: ">=4.17.0,<5.0.0"
+support_platforms:
+  - aiocqhttp
+repo: ""
+homepage: ""
+tags:
+  - identity
+  - group-management
+  - onebot
+  - permission
+  - action
+license: "MIT"
