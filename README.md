@@ -132,7 +132,7 @@ pip install -r requirements.txt
 | 配置项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `join_audit_mode` | string | `off` | 入群审核模式：off / approve_only / notify_only |
-| `join_questions` | list<object> | `[]` | 入群问答配置，对象数组，每项含 `question`（问题字符串）和 `answers`（答案字符串数组）。例如 `[{"question": "本群是做什么的", "answers": ["技术交流", "编程讨论"]}]` |
+| `join_questions` | list<string> | `[]` | 入群问答配置，每项一行，格式 `问题\|答案1,答案2`。例如 `["1+1=?\|2,二", "本群做什么的\|技术交流,编程讨论"]`。不含 `\|` 时整体视为答案。留空则仅依赖 LLM 语义判断 |
 | `join_approve_threshold` | float | `0.9` | 自动通过的最低置信度 |
 | `audit_notify_targets` | list<string> | `[]` | 审核人工通知目标列表（AstrBot 会话 ID，unified_msg_origin 格式）。例如 `["aiocqhttp:GroupMessage:123456"]` |
 | `pending_ttl_hours` | int | `24` | 待审请求保留时长（小时） |

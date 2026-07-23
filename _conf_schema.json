@@ -109,26 +109,13 @@
     "hint": "approve_only 仅高置信度正确时自动通过；notify_only 仅通知不自动通过；off 完全不处理。"
   },
   "join_questions": {
-    "description": "入群问答配置（问题与参考答案列表）",
+    "description": "入群问答配置（每项一行）",
     "type": "list",
     "default": [],
     "items": {
-      "type": "object",
-      "properties": {
-        "question": {
-          "type": "string",
-          "description": "入群申请中的问题文本"
-        },
-        "answers": {
-          "type": "list",
-          "description": "该问题的参考答案列表",
-          "items": {
-            "type": "string"
-          }
-        }
-      }
+      "type": "string"
     },
-    "hint": "对象数组，每项包含 question（问题字符串）和 answers（答案字符串数组）两个键。例如：[{\"question\": \"本群是做什么的\", \"answers\": [\"技术交流\", \"编程讨论\"]}]。可配置多个问答对。留空则仅依赖 LLM 语义判断。"
+    "hint": "每项格式：问题|答案1,答案2。例如：\"1+1=?|2,二\" 或 \"本群做什么的|技术交流,编程讨论\"。不含 | 时整体视为答案（匹配任意问题）。留空则仅依赖 LLM 语义判断。"
   },
   "join_approve_threshold": {
     "description": "入群申请自动通过的最低置信度",

@@ -15,7 +15,7 @@ from core.onebot import OneBotClient  # noqa: E402
 def _make_config(**overrides):
     defaults = {
         "join_questions": [
-            {"question": "1+1=?", "answers": ["2", "二"]},
+            "1+1=?|2,二",
         ],
         "join_approve_threshold": 0.9,
         "enable_active_learner_recall": False,
@@ -132,3 +132,52 @@ def test_llm_parse_uncertain():
 
     decision = asyncio.run(svc.judge_answer("未知问题", "模糊答案", []))
     assert decision.verdict == JoinVerdict.UNCERTAIN.value
+
+
+def test_string_format_question_answers():
+    """字符串格式 ``问题|答案1,答案2`` 正确解析为 question/answers。"""
+    cfg = _make_config()
+    questions = cfg.join_questions
+    assert len(questions) == 1
+    assert questions[0]["question"] == "1+1=?"
+    assert questions[0]["answers"] == ["2", "二"]
+
+
+def test_string_format_answer_only():
+    """不含 ``|`` 时整体视为答案，问题为空。"""
+    cfg = _make_config(join_questions=["技术交流"])
+    questions = cfg.join_questions
+    assert len(questions) == 1
+    assert questions[0]["question"] == ""
+    assert questions[0]["answers"] == ["技术交流"]
+
+
+def test_legacy_dict_format_compatible():
+    """旧的 dict 格式仍可正常解析。"""
+    cfg = _make_config(
+        join_questions=[{"question": "本群做什么的", "answers": ["技术交流", "编程"]}]
+    )
+    questions = cfg.join_questions
+    assert len(questions) == 1
+    assert questions[0]["question"] == "本群做什么的"
+    assert questions[0]["answers"] == ["技术交流", "编程"]
+
+
+def test_mixed_format():
+    """字符串格式与 dict 格式混用 — 全部解析。"""
+    cfg = _make_config(
+        join_questions=["1+1=?|2", {"question": "2+2=?", "answers": ["4"]}]
+    )
+    questions = cfg.join_questions
+    assert len(questions) == 2
+    assert questions[0]["question"] == "1+1=?"
+    assert questions[0]["answers"] == ["2"]
+    assert questions[1]["question"] == "2+2=?"
+    assert questions[1]["answers"] == ["4"]
+
+
+def test_empty_entries_skipped():
+    """空字符串条目被跳过。"""
+    cfg = _make_config(join_questions=["", "  ", "1+1=?|2"])
+    questions = cfg.join_questions
+    assert len(questions) == 1

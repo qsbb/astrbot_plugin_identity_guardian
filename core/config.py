@@ -187,8 +187,40 @@ class Config:
         return str(self._raw.get("join_audit_mode", "off"))
 
     @property
-    def join_questions(self) -> list[Any]:
-        return self._raw.get("join_questions", [])
+    def join_questions(self) -> list[dict[str, Any]]:
+        """入群问答配置，解析为 [{question, answers}] 列表。
+
+        支持两种配置格式，WebUI 友好：
+        1. 字符串格式（推荐）：``问题|答案1,答案2``
+           例如 ``"1+1=?|2,二"``
+           若不含 ``|``，整体视为答案（问题留空，匹配任意问题）
+        2. 对象格式（兼容旧配置）：``{"question": "...", "answers": [...]}``
+        """
+        raw = self._raw.get("join_questions", [])
+        parsed: list[dict[str, Any]] = []
+        for item in raw:
+            if isinstance(item, dict):
+                # 兼容旧的对象格式
+                parsed.append(
+                    {
+                        "question": str(item.get("question", "")),
+                        "answers": [str(a) for a in item.get("answers", [])],
+                    }
+                )
+            elif isinstance(item, str):
+                item = item.strip()
+                if not item:
+                    continue
+                if "|" in item:
+                    q, a = item.split("|", 1)
+                    question = q.strip()
+                    answers = [x.strip() for x in a.split(",") if x.strip()]
+                else:
+                    # 不含分隔符，整体视为答案
+                    question = ""
+                    answers = [item]
+                parsed.append({"question": question, "answers": answers})
+        return parsed
 
     @property
     def join_approve_threshold(self) -> float:
