@@ -1,4 +1,4 @@
-"""身份守护者插件主类。
+"""凝心溯溪-序插件主类。
 
 动态识别 bot、发送者与目标身份及关系，向 LLM 注入受控行动边界，
 并提供自助动作、互动反应、群信息管理和仅自动通过的入群审核能力。
@@ -39,11 +39,11 @@ LOG_PREFIX = "[idg]"
 @register(
     PLUGIN_NAME,
     "Justice-ocr",
-    "QQ 群身份与关系感知行动插件",
+    "凝心溯溪-序，关系感知、权限边界与群组行动",
     __version__,
 )
 class IdentityGuardianPlugin(Star):
-    """身份守护者插件。"""
+    """凝心溯溪-序插件。"""
 
     _current_instance: Any = None
     _PLUGIN_IDENTIFIERS = (PLUGIN_NAME, "IdentityGuardianPlugin")
@@ -917,7 +917,7 @@ class IdentityGuardianPlugin(Star):
 
     @filter.command_group("idg")
     def idg_group(self):
-        """身份守护者指令组。"""
+        """凝心溯溪-序指令组。"""
         pass
 
     @idg_group.command("status")
@@ -930,7 +930,7 @@ class IdentityGuardianPlugin(Star):
         stats = plugin.cooldown.stats()
         pending = plugin.confirm.list_pending()
         lines = [
-            f"身份守护者 v{__version__}",
+            f"凝心溯溪-序 v{__version__}",
             f"状态: {'已停止' if plugin._stopped else '运行中'}",
             f"bot 身份刷新间隔: {plugin.config.identity_refresh_interval}s",
             f"入群审核: {plugin.config.join_audit_mode}",
@@ -1031,7 +1031,7 @@ class IdentityGuardianPlugin(Star):
     async def idg_help(self, event: AstrMessageEvent):
         """查看帮助。"""
         lines = [
-            "身份守护者指令列表:",
+            "凝心溯溪-序指令列表:",
             "  /idg status - 查看状态",
             "  /idg stop - 紧急停止",
             "  /idg resume - 恢复运行",

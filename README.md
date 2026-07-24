@@ -1,24 +1,15 @@
-<h1 align="center">astrbot_plugin_identity_guardian</h1>
+# 凝心溯溪-序
 
-<p align="center">
-  身份守护者 · Identity Guardian<br />
-  让 bot 在 QQ 群里像真实成员一样理解「自己是谁、对方是谁、双方是什么关系、当前能做什么」，
-  并把经过代码层授权的行动能力提供给 LLM。
-</p>
+> 凝心溯溪系列身份模块：让 bot 在 QQ 群里像真实成员一样理解「自己是谁、对方是谁、双方是什么关系、当前能做什么」，并把经过代码层授权的行动能力提供给 LLM。
 
-<p align="center">
-  <a href="#安装">安装</a>
-  ·
-  <a href="#配置项">配置项</a>
-  ·
-  <a href="#llm-工具">LLM 工具</a>
-  ·
-  <a href="#指令组">指令组</a>
-  ·
-  <a href="#安全模型">安全模型</a>
-  ·
-  <a href="#免责声明">免责声明</a>
-</p>
+> **凝心溯溪系列** 是一套功能互补的 AstrBot 插件集合，旨在构建从记忆学习、对话调节、身份管理到语音合成的完整对话能力链。各插件职责独立、互不冲突，可按需组合使用。
+
+| 字 | 模块 | 说明 |
+|----|------|------|
+| [忆](https://github.com/qsbb/astrbot_plugin_active_learner) | 记忆学习 | 自动检索注入、多源学习、交叉验证 |
+| [言](https://github.com/qsbb/astrbot_plugin_conversation_flow) | 对话调节 | 沉默判断、智能分段、插话衔接 |
+| [序](https://github.com/qsbb/astrbot_plugin_identity_guardian) | 身份管理 | 关系感知、权限边界、群组行动（本插件） |
+| [声](https://github.com/qsbb/astrbot_plugin_voice_hub) | 语音合成 | 双 TTS 后端、多音色管理、AI 导演 |
 
 ---
 
@@ -326,7 +317,7 @@ ActionDecision = PolicyEngine.evaluate(
 | 项目 | 内容 |
 | --- | --- |
 | 插件名 | `astrbot_plugin_identity_guardian` |
-| 展示名 | 身份守护者 |
+| 展示名 | 凝心溯溪-序 |
 | 当前版本 | `v0.1.0` |
 | 作者 | Justice-ocr |
 | AstrBot 版本 | `>=4.17.0,<5.0.0` |
