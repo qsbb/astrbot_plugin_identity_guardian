@@ -2,6 +2,14 @@
 
 遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v0.1.4] - 2026-07-25
+
+### Fixed
+
+- 修复热重载后事件处理器崩溃：`'IdentityGuardianPlugin' object has no attribute 'get_platform_name'`。旧实例遗留的 `functools.partial` 会把插件实例再绑一次到第一个形参上，导致 `event` 形参整体错位收到插件实例本身。`on_event` 与 `on_llm_request` 现按鸭子类型从全部实参中取回真正的 event 与 ProviderRequest，取不到则安静跳过，不再抛栈污染日志。
+- 修复 `_unwrap_registry_handlers` 自始未生效的问题：此前读取上游不存在的 `registry.handlers` 与 `handler.full_name`，前者恒为空、后者恒为空串，导致 partial 拆解从未匹配到任何 handler。现改用上游真实字段 `registry._handlers` 与 `handler_full_name`（缺失时回退 `handler_module_path`），并支持多层套娃一路剥到原始函数，同时严格只处理本插件自己的 handler。
+- 修复 `metadata.yaml` 版本号停留在 v0.1.2 导致更新检查失效的问题。v0.1.3 只改了 `__init__.__version__`，而 AstrBot 与更新器读取的是 `metadata.yaml`，因此远端始终报告旧版本、界面上不会出现可更新提示。两处版本号现已同步，并新增回归测试防止再次漂移。
+
 ## [v0.1.3] - 2026-07-25
 
 ### Fixed

@@ -32,11 +32,31 @@ _test_logger.setLevel(logging.DEBUG)
 _astrbot_api.logger = _test_logger
 
 # mock Star, Context, StarTools, register
-_astrbot_api_star.Star = MagicMock()
+# Star 必须是真正的类：插件类继承它，若用 MagicMock 实例做基类，
+# 插件类本身会退化成 MagicMock，导致 __new__ / isinstance 全部失效。
+class _Star:
+    """最小 Star 基类桩，只保留 context 存取语义。"""
+
+    def __init__(self, context=None, *args, **kwargs):
+        self.context = context
+
+
+_astrbot_api_star.Star = _Star
 _astrbot_api_star.Context = MagicMock()
 _astrbot_api_star.StarTools = MagicMock()
 _astrbot_api_star.StarTools.get_data_dir = MagicMock(return_value="/tmp/idg_test")
-_astrbot_api_star.register = MagicMock()
+
+
+# register 必须是恒等装饰器：MagicMock 会把被装饰的插件类替换成 mock 返回值，
+# 之后 __new__ / isinstance(x, IdentityGuardianPlugin) 都会失败。
+def _register(*args, **kwargs):
+    def decorator(cls):
+        return cls
+
+    return decorator
+
+
+_astrbot_api_star.register = _register
 
 # mock filter
 _mock_filter = MagicMock()

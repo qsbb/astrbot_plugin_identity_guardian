@@ -36,6 +36,41 @@ PLUGIN_NAME = "astrbot_plugin_identity_guardian"
 LOG_PREFIX = "[idg]"
 
 
+def _resolve_event(*candidates: Any) -> Any | None:
+    """从候选实参中挑出真正的 AstrMessageEvent。
+
+    正常情况下框架把 event 作为第一个实参传入。但热重载残留 partial 套娃时，
+    形参会整体错位（详见 ``_unwrap_registry_handlers`` 的说明），此时 event 形参
+    拿到的是插件实例。这里按鸭子类型识别真正的 event，避免直接抛 AttributeError。
+    """
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if isinstance(candidate, IdentityGuardianPlugin):
+            continue
+        if callable(getattr(candidate, "get_platform_name", None)):
+            return candidate
+    return None
+
+
+def _resolve_llm_request(*candidates: Any) -> Any | None:
+    """从候选实参中挑出真正的 ProviderRequest。
+
+    与 ``_resolve_event`` 配套：形参错位时 req 也会跟着挪位。ProviderRequest 的稳定
+    特征是带 ``system_prompt`` 或 ``prompt`` 属性，且不是 event、不是插件实例。
+    """
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if isinstance(candidate, IdentityGuardianPlugin):
+            continue
+        if callable(getattr(candidate, "get_platform_name", None)):
+            continue
+        if hasattr(candidate, "system_prompt") or hasattr(candidate, "prompt"):
+            return candidate
+    return None
+
+
 @register(
     PLUGIN_NAME,
     "Justice-ocr",
@@ -117,9 +152,19 @@ class IdentityGuardianPlugin(Star):
             self.logger.debug("%s _unwrap_stale_partials skipped: %s", LOG_PREFIX, exc)
 
     def _unwrap_registry_handlers(self) -> None:
-        """将 registry 中本插件的 handler 重置为原始未绑定函数。"""
+        """将 registry 中本插件的 handler 重置为原始未绑定函数。
+
+        AstrBot 加载插件时会用 ``functools.partial(raw_handler, star_instance)``
+        预置 ``self``。若重载时 registry 里残留的已是 partial，再包一层就会变成
+        ``partial(partial(raw, 旧实例), 新实例)``——调用 ``handler(event)`` 实际等价于
+        ``raw(旧实例, 新实例, event)``，于是 ``event`` 形参收到的是插件实例本身，
+        真正的 event 被挤进 ``*args``，表现为
+        ``'IdentityGuardianPlugin' object has no attribute 'get_platform_name'``。
+        因此这里在每次 ``__init__`` 时先剥回未绑定函数，交由框架重新绑定。
+        """
         registry = None
         for module_path in (
+            "astrbot.core.star.star_handler",
             "astrbot.core.star.star_handlers_registry",
             "astrbot.core.star",
         ):
@@ -132,18 +177,42 @@ class IdentityGuardianPlugin(Star):
                 continue
         if registry is None:
             return
-        handlers = getattr(registry, "handlers", None)
-        if not isinstance(handlers, list):
-            return
+        self._apply_unwrap(registry)
+
+    def _apply_unwrap(self, registry: Any) -> None:
+        """在给定 registry 上执行拆解，便于单测直接注入。"""
+        # 上游字段名为 _handlers，旧实现误用 handlers 导致整个防护静默失效；
+        # 这里按优先级探测，并保留可迭代 registry 的兜底。
+        handlers: Any = None
+        for attr in ("_handlers", "handlers"):
+            candidate = getattr(registry, attr, None)
+            if isinstance(candidate, list):
+                handlers = candidate
+                break
+        if handlers is None:
+            try:
+                handlers = list(registry)
+            except Exception:
+                return
+
         unwrapped = 0
         for handler in handlers:
-            full_name = str(getattr(handler, "full_name", "") or "")
-            if not any(ident in full_name for ident in self._PLUGIN_IDENTIFIERS):
+            # 上游字段名为 handler_full_name，旧实现误用 full_name 取到空串，
+            # 导致所有 handler 都匹配不上本插件。
+            full_name = str(
+                getattr(handler, "handler_full_name", None)
+                or getattr(handler, "full_name", "")
+                or ""
+            )
+            module_path = str(getattr(handler, "handler_module_path", "") or "")
+            haystack = f"{full_name} {module_path}"
+            if not any(ident in haystack for ident in self._PLUGIN_IDENTIFIERS):
                 continue
-            original = getattr(handler, "handler", None)
+            current = getattr(handler, "handler", None)
+            original = current
             while isinstance(original, functools.partial):
                 original = original.func
-            if original is not getattr(handler, "handler", None):
+            if original is not None and original is not current:
                 try:
                     handler.handler = original
                     unwrapped += 1
@@ -221,6 +290,20 @@ class IdentityGuardianPlugin(Star):
             return
         if not plugin.config.enabled or plugin._stopped:
             return
+
+        # 形参可能因 partial 套娃整体错位，这里按鸭子类型取回真正的 event 与 req。
+        resolved_event = _resolve_event(event, self, req, *args)
+        if resolved_event is None:
+            plugin.logger.debug("%s on_llm_request received no usable event", LOG_PREFIX)
+            return
+        if resolved_event is not event:
+            req = _resolve_llm_request(event, req, *args)
+            if req is None:
+                plugin.logger.debug(
+                    "%s on_llm_request received no usable request", LOG_PREFIX
+                )
+                return
+        event = resolved_event
 
         # 仅 aiocqhttp 平台
         if event.get_platform_name() != "aiocqhttp":
@@ -304,6 +387,11 @@ class IdentityGuardianPlugin(Star):
         if not isinstance(plugin, IdentityGuardianPlugin):
             return
         if not plugin.config.enabled or plugin._stopped:
+            return
+        # 形参可能因 partial 套娃整体错位，这里按鸭子类型取回真正的 event。
+        event = _resolve_event(event, self, *args)
+        if event is None:
+            plugin.logger.debug("%s on_event received no usable event", LOG_PREFIX)
             return
         if event.get_platform_name() != "aiocqhttp":
             return
