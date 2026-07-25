@@ -2,7 +2,18 @@
 
 遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [v0.1.3] - 2026-07-25
+
+### Fixed
+
+- 修复 bot 为普通成员时无法按请求修改自己群名片的问题。LLM 常把「改你自己的名片」表达为 `set_member_card(user_id=<bot 自己>)`，此前会被管理员权限门以「bot 身份(member)无此权限」拒绝。策略引擎现在在权限校验前把指向 bot 自己的 `set_member_card` 归一化为 `set_self_card`（OneBot 中改自己名片只需 member 权限）。指向他人的调用仍按原权限规则拒绝，不构成提权路径。
+- 修复群成员信息查询失败时把降级结果写入缓存的问题。此前一次接口抖动就会把真实的管理员身份在整个 `identity_refresh_interval` 周期内锁死为 `member`，导致本该允许的管理动作被持续拒绝。查询失败或 `role` 字段缺失/不可识别时仍降级为 `member`，但不再写入缓存，下次调用可恢复真实身份。
+- 统一 `role` 字段解析，兼容字符串、整数（1/2/3）与对象三种 OneBot 实现差异，并对大小写和空格做归一化；无法识别的取值不再被当作 `member` 缓存。
+- 修复 v0.1.2 引入的工具过滤实际未生效的问题。过滤逻辑此前读写 `ProviderRequest.tools`，而 AstrBot 用 `func_tool`（`ToolSet`）承载工具列表，导致过滤恒为空操作，普通成员身份下仍会看到管理员 / 群主工具。现改为在 `func_tool` 上按名称移除不可用工具，并保留对旧 `tools` 列表结构的兼容。该 `ToolSet` 由 AstrBot 每次请求新建，原地移除不会污染全局工具表或其他会话。
+
+### Changed
+
+- 身份上下文新增 bot 自己的 QQ 号，并在行动边界中明确提示改自己名片应使用 `set_self_card`，减少 LLM 选错工具。
 
 ## [v0.1.2] - 2026-07-25
 

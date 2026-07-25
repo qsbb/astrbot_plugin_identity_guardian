@@ -27,6 +27,7 @@ RELATION_ZH: dict[str, str] = {
 IDENTITY_PROMPT_TEMPLATE = """<identity_context>
 当前群：{group_name}（{group_id}）
 你的群身份：{bot_role_zh}
+你自己的 QQ 号：{bot_id}
 当前消息发送者：{sender_name}（{sender_id}）
 对方群身份：{sender_role_zh}
 对方与你的关系：{sender_relation_zh}
@@ -106,6 +107,7 @@ def build_identity_prompt(
         group_name=group_name,
         group_id=group_id,
         bot_role_zh=bot_role_zh,
+        bot_id=actor.bot_id or "未知",
         sender_name=sender_name,
         sender_id=actor.requester_id,
         sender_role_zh=sender_role_zh,

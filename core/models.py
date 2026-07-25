@@ -67,6 +67,7 @@ class ActorContext:
     requester_id: str
     requester_role: str
     requester_relation: str
+    bot_id: str = ""
     target_id: str | None = None
     target_role: str | None = None
     target_relation: str | None = None

@@ -18,6 +18,30 @@ _OB_ROLE_MAP: dict[int, str] = {1: "owner", 2: "admin", 3: "member"}
 # 缓存结构: (group_id, user_id) -> (role_str, timestamp)
 _ROLE_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
 
+# OneBot 实现之间 role 字段类型不统一，这里统一归一化
+_VALID_ROLES = frozenset(("owner", "admin", "member"))
+
+
+def extract_ob_role(info: Any) -> str | None:
+    """从 get_group_member_info 响应中解析角色。
+
+    返回 None 表示无法确定角色（查询失败或字段缺失/不可识别），
+    调用方应按降级处理且不要缓存该结果。
+    """
+    if not isinstance(info, dict):
+        return None
+
+    ob_role = info.get("role")
+    if isinstance(ob_role, str):
+        role = ob_role.strip().lower()
+        return role if role in _VALID_ROLES else None
+    if isinstance(ob_role, dict):
+        name = str(ob_role.get("name", "")).strip().lower()
+        return name if name in _VALID_ROLES else None
+    if isinstance(ob_role, int) and not isinstance(ob_role, bool):
+        return _OB_ROLE_MAP.get(ob_role)
+    return None
+
 
 class IdentityManager:
     """身份查询与缓存管理。"""
@@ -67,21 +91,17 @@ class IdentityManager:
             return Role.MEMBER.value
 
         info = await self.onebot.get_group_member_info(event, gid, uid, no_cache=False)
-        if info and isinstance(info, dict):
-            ob_role = info.get("role")
-            if isinstance(ob_role, str):
-                role = ob_role
-            elif isinstance(ob_role, dict):
-                role = ob_role.get("name", "member")
-            else:
-                role = _OB_ROLE_MAP.get(ob_role or 0, "member")
-        else:
-            role = Role.MEMBER.value
+        role = extract_ob_role(info)
+        if role is None:
+            # 查询失败或响应里没有可用的 role 字段时降级为 member，但不写入缓存。
+            # 否则一次接口抖动就会把真实的管理员身份在整个刷新周期内锁死为普通成员，
+            # 导致本该允许的管理动作被持续拒绝。
             logger.debug(
-                "[idg] get_role failed for %s in %s, fallback to member",
+                "[idg] get_role failed for %s in %s, fallback to member (not cached)",
                 user_id,
                 group_id,
             )
+            return Role.MEMBER.value
 
         self._cache_set(group_id, user_id, role)
         return role
@@ -115,6 +135,7 @@ class IdentityManager:
 
         return ActorContext(
             bot_role=bot_role,
+            bot_id=self_id,
             requester_id=sender_id,
             requester_role=requester_role,
             requester_relation=requester_relation,

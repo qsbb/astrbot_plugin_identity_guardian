@@ -33,10 +33,12 @@ def _make_actor(
     target_id=None,
     target_role=None,
     target_relation=None,
+    bot_id="555",
 ):
     """创建测试 ActorContext。"""
     return ActorContext(
         bot_role=bot_role,
+        bot_id=bot_id,
         requester_id=requester_id,
         requester_role=requester_role,
         requester_relation=requester_relation,
@@ -434,6 +436,68 @@ def test_member_bot_can_set_self_card():
         TriggerSource.LLM_AUTONOMOUS.value,
     )
     assert decision.allowed is True
+
+
+def test_member_bot_set_member_card_on_self_is_rewritten():
+    """bot 为普通成员，用 set_member_card 指向自己 — 重写为 set_self_card 并允许。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(bot_role="member", bot_id="555")
+    decision = engine.evaluate(
+        actor,
+        "set_member_card",
+        {"user_id": "555", "card": "小心夏"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is True
+    assert decision.action == "set_self_card"
+    assert decision.params == {"card": "小心夏"}
+
+
+def test_member_bot_set_member_card_on_other_still_denied():
+    """bot 为普通成员，改他人名片 — 仍然按权限拒绝，不被重写绕过。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(bot_role="member", bot_id="555")
+    decision = engine.evaluate(
+        actor,
+        "set_member_card",
+        {"user_id": "888", "card": "小心夏"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+    assert decision.action == "set_member_card"
+    assert "bot 身份" in decision.reason
+
+
+def test_admin_bot_set_member_card_on_self_is_rewritten():
+    """bot 为管理员，指向自己的改名片同样归一化为 set_self_card。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(bot_role="admin", bot_id="555")
+    decision = engine.evaluate(
+        actor,
+        "set_member_card",
+        {"user_id": "555", "card": "小心夏"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is True
+    assert decision.action == "set_self_card"
+
+
+def test_set_member_card_without_bot_id_not_rewritten():
+    """缺少 bot_id 时不做重写，保持原有行为。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(bot_role="member", bot_id="")
+    decision = engine.evaluate(
+        actor,
+        "set_member_card",
+        {"user_id": "555", "card": "小心夏"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+    assert decision.action == "set_member_card"
 
 
 # ------------------------------------------------------------------

@@ -18,7 +18,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 from . import __version__
 from .core.audit import JoinAuditService
 from .core.audit_log import AuditLogger
-from .core.capability import ALL_TOOL_NAMES, filter_tools_for_role
+from .core.capability import ALL_TOOL_NAMES, filter_request_tools_for_role
 from .core.config import Config
 from .core.confirm import ConfirmService
 from .core.cooldown import CooldownService
@@ -205,13 +205,11 @@ class IdentityGuardianPlugin(Star):
 
     def _filter_tools_for_bot_role(self, req: Any, bot_role: str) -> int:
         """按当前群中的 bot 身份移除无权限的本插件工具。"""
-        tools = getattr(req, "tools", None)
-        if not tools:
+        try:
+            return filter_request_tools_for_role(req, bot_role)
+        except Exception as exc:  # pragma: no cover - 防御性
+            self.logger.debug("%s tool filter skipped: %s", LOG_PREFIX, exc)
             return 0
-
-        original = list(tools)
-        req.tools = filter_tools_for_role(original, bot_role)
-        return len(original) - len(req.tools)
 
     @filter.on_llm_request()
     async def on_llm_request(

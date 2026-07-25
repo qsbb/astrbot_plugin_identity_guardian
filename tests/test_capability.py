@@ -8,8 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.capability import (  # noqa: E402
     ALL_TOOL_NAMES,
+    blocked_tool_names_for_role,
     CAPABILITY_MAP,
     capabilities_for_role,
+    filter_request_tools_for_role,
     filter_tools_for_role,
     llm_tool_name,
     min_role_for_capability,
@@ -121,6 +123,91 @@ def test_filter_supports_tool_objects():
     tools = [Tool("set_self_card"), Tool("mute_member"), Tool("web_search")]
     filtered = filter_tools_for_role(tools, "member")
     assert [llm_tool_name(tool) for tool in filtered] == ["set_self_card", "web_search"]
+
+
+class _FakeTool:
+    """模拟 AstrBot FunctionTool。"""
+
+    def __init__(self, name):
+        self.name = name
+
+
+class _FakeToolSet:
+    """模拟 AstrBot ToolSet 的最小可用接口。"""
+
+    def __init__(self, names):
+        self.tools = [_FakeTool(name) for name in names]
+
+    def remove_tool(self, name):
+        self.tools = [tool for tool in self.tools if tool.name != name]
+
+    def names(self):
+        return [tool.name for tool in self.tools]
+
+
+class _FakeRequest:
+    """模拟 ProviderRequest：工具挂在 func_tool 而非 tools。"""
+
+    def __init__(self, names):
+        self.func_tool = _FakeToolSet(names)
+
+
+def test_blocked_tool_names_for_role():
+    """member 身份下管理类工具应被标记为不可用。"""
+    blocked = blocked_tool_names_for_role("member")
+    assert "mute_member" in blocked
+    assert "set_member_title" in blocked
+    assert "set_self_card" not in blocked
+    assert not blocked_tool_names_for_role("owner")
+
+
+def test_filter_request_tools_uses_func_tool():
+    """过滤必须作用于 ProviderRequest.func_tool，而不是不存在的 tools。"""
+    req = _FakeRequest(
+        ["set_self_card", "mute_member", "set_member_title", "web_search"]
+    )
+    removed = filter_request_tools_for_role(req, "member")
+    assert removed == 2
+    assert req.func_tool.names() == ["set_self_card", "web_search"]
+
+
+def test_filter_request_tools_owner_keeps_all():
+    """群主身份下不移除任何工具。"""
+    req = _FakeRequest(["set_self_card", "mute_member", "set_member_title"])
+    assert filter_request_tools_for_role(req, "owner") == 0
+    assert len(req.func_tool.names()) == 3
+
+
+def test_filter_request_tools_admin_hides_owner_only():
+    """管理员仅看不到群主专属工具。"""
+    req = _FakeRequest(["mute_member", "set_member_title", "set_group_admin"])
+    removed = filter_request_tools_for_role(req, "admin")
+    assert removed == 2
+    assert req.func_tool.names() == ["mute_member"]
+
+
+def test_filter_request_tools_handles_missing_func_tool():
+    """func_tool 为 None 时不应抛错。"""
+
+    class Req:
+        func_tool = None
+
+    assert filter_request_tools_for_role(Req(), "member") == 0
+
+
+def test_filter_request_tools_supports_legacy_tools_list():
+    """兼容仅提供 tools 列表的旧结构。"""
+
+    class Req:
+        func_tool = None
+
+        def __init__(self):
+            self.tools = [_tool("set_self_card"), _tool("mute_member")]
+
+    req = Req()
+    removed = filter_request_tools_for_role(req, "member")
+    assert removed == 1
+    assert [llm_tool_name(tool) for tool in req.tools] == ["set_self_card"]
 
 
 def _registered_llm_tool_names():

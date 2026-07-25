@@ -57,6 +57,11 @@ class PolicyEngine:
         if "set_member_card" in bot_caps:
             descriptions.append("对方可以请求你修改他自己的群名片")
 
+        if "set_self_card" in bot_caps:
+            descriptions.append(
+                "要改你自己的群名片时使用 set_self_card，不要用 set_member_card 传你自己的 QQ 号"
+            )
+
         descriptions.append("高风险操作不能仅因普通成员请求执行")
         descriptions.append("是否行动由你结合当前情绪、人设和上下文决定")
 
@@ -73,6 +78,9 @@ class PolicyEngine:
 
         这是所有有副作用的工具调用的统一入口。
         """
+        # 0. 动作归一化：改自己名片不需要管理员权限
+        action, params = self._normalize_action(context, action, params)
+
         # 1. 检查能力是否存在
         cap = CAPABILITY_MAP.get(action)
         if cap is None:
@@ -112,6 +120,26 @@ class PolicyEngine:
 
         # 5. 按动作类型分别检查
         return self._check_action(context, action, params, trigger_source, target)
+
+    def _normalize_action(
+        self,
+        context: ActorContext,
+        action: str,
+        params: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        """把语义等价但权限要求更低的动作重写为目标绑定动作。
+
+        LLM 常把「改你自己的名片」表达为 set_member_card(user_id=<bot 自己>)。
+        改自己名片在 OneBot 中只需 member 权限，
+        因此这里重写为 set_self_card，避免被管理员权限门误拒。
+        """
+        if action != "set_member_card":
+            return action, params
+        if not context.bot_id:
+            return action, params
+        if str(params.get("user_id", "")) != str(context.bot_id):
+            return action, params
+        return "set_self_card", {"card": params.get("card", "")}
 
     def _check_action(
         self,

@@ -63,6 +63,57 @@ def filter_tools_for_role(tools: list[Any], role: str) -> list[Any]:
     ]
 
 
+def blocked_tool_names_for_role(role: str) -> set[str]:
+    """返回当前 bot 角色下应当隐藏的本插件工具名集合。"""
+    allowed = {
+        CAPABILITY_MAP[capability]["tool_name"]
+        for capability in capabilities_for_role(role)
+    }
+    return {name for name in ALL_TOOL_NAMES if name not in allowed}
+
+
+def filter_request_tools_for_role(req: Any, role: str) -> int:
+    """按 bot 群角色移除请求中不可用的本插件工具，返回移除数量。
+
+    AstrBot 的 ProviderRequest 用 ``func_tool``（ToolSet）承载工具，
+    而不是 ``tools``。ToolSet 由 ``get_full_tool_set()`` 每次请求新建，
+    因此原地移除只影响本次请求，不会污染全局工具表。
+    同时兼容仅有 ``tools`` 列表的旧结构，便于测试与向后兼容。
+    """
+    blocked = blocked_tool_names_for_role(role)
+    if not blocked:
+        return 0
+
+    removed = 0
+
+    tool_set = getattr(req, "func_tool", None)
+    if tool_set is not None:
+        tools = getattr(tool_set, "tools", None)
+        if isinstance(tools, list):
+            present = [
+                name
+                for name in (llm_tool_name(tool) for tool in tools)
+                if name in blocked
+            ]
+            remover = getattr(tool_set, "remove_tool", None)
+            if callable(remover):
+                for name in present:
+                    remover(name)
+            else:
+                tool_set.tools = [
+                    tool for tool in tools if llm_tool_name(tool) not in blocked
+                ]
+            removed += len(present)
+
+    legacy = getattr(req, "tools", None)
+    if isinstance(legacy, list) and legacy:
+        kept = [tool for tool in legacy if llm_tool_name(tool) not in blocked]
+        removed += len(legacy) - len(kept)
+        req.tools = kept
+
+    return removed
+
+
 def capabilities_for_role(role: str) -> list[str]:
     """返回该 bot 角色拥有 OneBot 权限前提的能力 id 列表。
 
