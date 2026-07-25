@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 # 角色权限等级：数字越大权限越高
 ROLE_LEVEL: dict[str, int] = {
     "member": 0,
@@ -35,6 +37,30 @@ CAPABILITY_MAP: dict[str, dict[str, str]] = {
 
 # 所有 LLM 工具名
 ALL_TOOL_NAMES: list[str] = [cap["tool_name"] for cap in CAPABILITY_MAP.values()]
+
+
+def llm_tool_name(tool: Any) -> str:
+    """兼容字典 schema 与 FunctionTool 对象，提取工具名。"""
+    if isinstance(tool, dict):
+        function = tool.get("function")
+        if isinstance(function, dict):
+            return str(function.get("name", ""))
+        return str(tool.get("name", ""))
+    return str(getattr(tool, "name", "") or "")
+
+
+def filter_tools_for_role(tools: list[Any], role: str) -> list[Any]:
+    """保留其他插件工具，并隐藏当前 bot 角色不可用的本插件工具。"""
+    allowed_tool_names = {
+        CAPABILITY_MAP[capability]["tool_name"]
+        for capability in capabilities_for_role(role)
+    }
+    return [
+        tool
+        for tool in tools
+        if llm_tool_name(tool) not in ALL_TOOL_NAMES
+        or llm_tool_name(tool) in allowed_tool_names
+    ]
 
 
 def capabilities_for_role(role: str) -> list[str]:

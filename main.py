@@ -18,7 +18,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 from . import __version__
 from .core.audit import JoinAuditService
 from .core.audit_log import AuditLogger
-from .core.capability import ALL_TOOL_NAMES
+from .core.capability import ALL_TOOL_NAMES, filter_tools_for_role
 from .core.config import Config
 from .core.confirm import ConfirmService
 from .core.cooldown import CooldownService
@@ -203,6 +203,16 @@ class IdentityGuardianPlugin(Star):
     # on_llm_request: 身份上下文注入
     # ------------------------------------------------------------------
 
+    def _filter_tools_for_bot_role(self, req: Any, bot_role: str) -> int:
+        """按当前群中的 bot 身份移除无权限的本插件工具。"""
+        tools = getattr(req, "tools", None)
+        if not tools:
+            return 0
+
+        original = list(tools)
+        req.tools = filter_tools_for_role(original, bot_role)
+        return len(original) - len(req.tools)
+
     @filter.on_llm_request()
     async def on_llm_request(
         self, event: AstrMessageEvent, req: Any, *args: Any, **kwargs: Any
@@ -241,6 +251,16 @@ class IdentityGuardianPlugin(Star):
         except Exception as exc:
             plugin.logger.debug("%s identity lookup failed: %s", LOG_PREFIX, exc)
             return
+
+        removed = plugin._filter_tools_for_bot_role(req, actor.bot_role)
+        if removed:
+            plugin.logger.debug(
+                "%s filtered %d unavailable tool(s) for bot_role=%s group=%s",
+                LOG_PREFIX,
+                removed,
+                actor.bot_role,
+                group_id,
+            )
 
         # 生成允许行动描述
         allowed = plugin.policy.allowed_actions(actor)
@@ -473,6 +493,76 @@ class IdentityGuardianPlugin(Star):
         # 执行
         result = await self._execute_action(event, decision, target_id)
         return result
+
+    async def _execute_readonly(
+        self,
+        event: AstrMessageEvent,
+        action: str,
+        params: dict[str, Any],
+    ) -> str:
+        """只读查询入口：策略检查 → 查询 → 返回摘要，不写审计与冷却。"""
+        if self._stopped:
+            return "操作已被安全护栏拦截（紧急停止）。"
+
+        group_id_str = event.get_group_id()
+        if not group_id_str:
+            return "该工具仅在群聊中可用。"
+
+        actor = await self._get_actor(event)
+        if actor is None:
+            return "无法获取身份上下文。"
+
+        decision = self.policy.evaluate(
+            actor, action, params, TriggerSource.EXPLICIT_REQUEST.value
+        )
+        if not decision.allowed:
+            return f"操作未获授权：{decision.reason}。"
+
+        try:
+            group_id = int(group_id_str)
+        except (ValueError, TypeError):
+            return "群 ID 无效。"
+
+        if action == "get_group_member_info":
+            try:
+                uid = int(params.get("user_id", 0))
+            except (ValueError, TypeError):
+                return "用户 ID 无效。"
+            if uid <= 0:
+                return "用户 ID 无效。"
+            info = await self.onebot.get_group_member_info(event, group_id, uid)
+            if not info:
+                return "查询失败，未获取到该成员信息。"
+            return (
+                f"成员 {info.get('user_id', uid)}："
+                f"昵称={info.get('nickname', '未知')}，"
+                f"群名片={info.get('card') or '（未设置）'}，"
+                f"角色={info.get('role', 'member')}，"
+                f"头衔={info.get('title') or '（无）'}"
+            )
+
+        if action == "list_group_members":
+            members = await self.onebot.get_group_member_list(event, group_id)
+            if not members:
+                return "查询失败，未获取到群成员列表。"
+            owners = [m for m in members if m.get("role") == "owner"]
+            admins = [m for m in members if m.get("role") == "admin"]
+
+            def _label(member: dict) -> str:
+                return str(
+                    member.get("card")
+                    or member.get("nickname")
+                    or member.get("user_id", "")
+                )
+
+            parts = [f"当前群共 {len(members)} 名成员"]
+            if owners:
+                parts.append("群主：" + "、".join(_label(m) for m in owners))
+            if admins:
+                parts.append("管理员：" + "、".join(_label(m) for m in admins))
+            return "；".join(parts) + "。"
+
+        return f"未实现的查询: {action}"
 
     async def _execute_action(
         self,
@@ -910,6 +1000,32 @@ class IdentityGuardianPlugin(Star):
             {"flag": flag, "sub_type": sub_type, "approve": approve, "reason": reason},
             trigger_source=TriggerSource.JOIN_AUDIT.value,
         )
+
+    @filter.llm_tool(name="get_group_member_info")
+    async def get_group_member_info_tool(
+        self,
+        event: AstrMessageEvent,
+        user_id: str,
+    ):
+        """查询群成员信息（只读，无副作用）。返回群名片、角色、头衔与入群时间。
+
+        Args:
+            user_id(string): 被查询用户的 QQ 号
+        """
+        plugin = IdentityGuardianPlugin._current_instance or self
+        if not isinstance(plugin, IdentityGuardianPlugin):
+            return "插件初始化中，请稍后重试。"
+        return await plugin._execute_readonly(
+            event, "get_group_member_info", {"user_id": user_id}
+        )
+
+    @filter.llm_tool(name="list_group_members")
+    async def list_group_members_tool(self, event: AstrMessageEvent):
+        """列出当前群成员概况（只读，无副作用）。返回成员总数与管理层名单。"""
+        plugin = IdentityGuardianPlugin._current_instance or self
+        if not isinstance(plugin, IdentityGuardianPlugin):
+            return "插件初始化中，请稍后重试。"
+        return await plugin._execute_readonly(event, "list_group_members", {})
 
     # ------------------------------------------------------------------
     # /idg 指令组
