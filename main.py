@@ -294,7 +294,9 @@ class IdentityGuardianPlugin(Star):
         # 形参可能因 partial 套娃整体错位，这里按鸭子类型取回真正的 event 与 req。
         resolved_event = _resolve_event(event, self, req, *args)
         if resolved_event is None:
-            plugin.logger.debug("%s on_llm_request received no usable event", LOG_PREFIX)
+            plugin.logger.debug(
+                "%s on_llm_request received no usable event", LOG_PREFIX
+            )
             return
         if resolved_event is not event:
             req = _resolve_llm_request(event, req, *args)

@@ -31,6 +31,7 @@ _test_logger = logging.getLogger("idg_test")
 _test_logger.setLevel(logging.DEBUG)
 _astrbot_api.logger = _test_logger
 
+
 # mock Star, Context, StarTools, register
 # Star 必须是真正的类：插件类继承它，若用 MagicMock 实例做基类，
 # 插件类本身会退化成 MagicMock，导致 __new__ / isinstance 全部失效。
