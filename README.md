@@ -318,7 +318,7 @@ ActionDecision = PolicyEngine.evaluate(
 | --- | --- |
 | 插件名 | `astrbot_plugin_identity_guardian` |
 | 展示名 | 凝心溯溪-序 |
-| 当前版本 | `v0.1.0` |
+| 当前版本 | `v0.1.1` |
 | 作者 | Justice-ocr |
 | AstrBot 版本 | `>=4.17.0,<5.0.0` |
 | 支持平台 | `aiocqhttp`（NapCat / Lagrange / LLOneBot 等 OneBot V11 实现） |
