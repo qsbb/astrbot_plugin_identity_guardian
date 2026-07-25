@@ -57,7 +57,8 @@ class OneBotClient:
             )
             if isinstance(resp, dict):
                 if resp.get("status") == "ok":
-                    return resp.get("data")
+                    data = resp.get("data")
+                    return {} if data is None else data
                 msg = resp.get("msg") or resp.get("wording") or "unknown error"
                 log = logger.debug if is_query else logger.warning
                 log(
