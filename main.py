@@ -1134,7 +1134,7 @@ class IdentityGuardianPlugin(Star):
         stats = plugin.cooldown.stats()
         pending = plugin.confirm.list_pending()
         lines = [
-            f"凝心溯溪-序 v{__version__}",
+            f"凝心溯溪-序 {__version__}",
             f"状态: {'已停止' if plugin._stopped else '运行中'}",
             f"bot 身份刷新间隔: {plugin.config.identity_refresh_interval}s",
             f"入群审核: {plugin.config.join_audit_mode}",
