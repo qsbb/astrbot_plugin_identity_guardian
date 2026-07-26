@@ -1,3 +1,3 @@
 """AstrBot identity guardian plugin package."""
 
-__version__ = "v0.1.4"
+__version__ = "v0.1.5"

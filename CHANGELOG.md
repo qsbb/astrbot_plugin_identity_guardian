@@ -2,6 +2,13 @@
 
 遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v0.1.5] - 2026-07-26
+
+### Fixed
+
+- 修复所有写操作实际生效却被报告为失败的问题。典型表现：让 bot 改自己群名片，名片确实改成了，但回复「好像改不了，我没这个权限呢」，日志里是 `Tool set_self_card Result: 执行失败：set_group_card failed`。根因是成功判定读了不存在的字段：aiocqhttp 的 `call_action` 内部已由 `_handle_api_result` 拆包，**只返回 `data` 字段**，并在 `status == "failed"` 时抛 `ActionFailed`；而 OneBot 的写操作成功时 `data` 为 `null`，即 `call_action` 返回 `None`。插件此前用 `resp["status"] == "ok"` 判定，这个分支永远走不到，`None` 被当成失败。现改为「未抛异常即成功」，并保留对返回完整响应信封的适配器的兼容判定（要求同时含 `status` 与 `retcode`，避免把恰好带 `status` 字段的业务 data 误判）。此问题影响改名片、禁言、踢人、改群名、设头衔等全部写操作。
+- 补全失败日志的诊断信息：`ActionFailed` 的 `str()` 只带 retcode，真正有用的 `wording` / `msg` 藏在 `result` 字典里，现已一并输出，便于区分权限不足与其他失败原因。
+
 ## [v0.1.4] - 2026-07-25
 
 ### Fixed

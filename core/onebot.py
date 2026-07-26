@@ -33,16 +33,40 @@ def _safe_params(params: dict) -> str:
     return "{" + ", ".join(parts) + "}" if parts else "(non-diag)"
 
 
+def _describe_exc(exc: Exception) -> str:
+    """提取异常的可读描述。
+
+    aiocqhttp 的 `ActionFailed` 只在 `str()` 里带 retcode，
+    真正有用的 `wording` / `msg` 藏在 `result` 字典里，排错时需要看到。
+    这里用鸭子类型取，避免为一个日志字段硬依赖 aiocqhttp。
+    """
+    detail = ""
+    result = getattr(exc, "result", None)
+    if isinstance(result, dict):
+        detail = str(result.get("wording") or result.get("msg") or "")
+    base = f"{type(exc).__name__}: {exc}"
+    return f"{base} ({detail})" if detail else base
+
+
 class OneBotClient:
     """OneBot V11 API 调用封装。"""
 
     def __init__(self, timeout: float = 30.0) -> None:
         self.timeout = timeout
 
-    async def call(self, event: Any, action: str, **params: Any) -> dict | None:
+    async def call(self, event: Any, action: str, **params: Any) -> Any:
         """统一封装 call_action，处理超时与错误。
 
-        返回 API 响应 data 字段，失败返回 None。
+        成功返回 API 响应的 data；data 为 null 时返回 `{}` 作为成功标记，
+        因此调用方一律用 `result is not None` 判断成败。失败返回 None。
+
+        注意 aiocqhttp 的 `call_action` 已经由 `_handle_api_result` 拆包，
+        **只返回 data 字段**，并在 `status == "failed"` 时抛 `ActionFailed`。
+        写操作（如 set_group_card）成功时 data 为 null，即返回 None。
+        因此不能用 `resp["status"] == "ok"` 判断成功，否则所有写操作都会
+        被误判为失败。这里改为「未抛异常即成功」。
+
+        为兼容个别把完整响应包原样返回的适配器，仍保留信封判定分支。
         查询类失败降级为 debug（上层有 fallback），写操作失败保留 warning。
         """
         bot = getattr(event, "bot", None)
@@ -55,20 +79,25 @@ class OneBotClient:
             resp = await asyncio.wait_for(
                 bot.call_action(action, **params), timeout=self.timeout
             )
-            if isinstance(resp, dict):
-                if resp.get("status") == "ok":
-                    data = resp.get("data")
-                    return {} if data is None else data
-                msg = resp.get("msg") or resp.get("wording") or "unknown error"
-                log = logger.debug if is_query else logger.warning
-                log(
-                    "[idg] action %s failed: %s | params=%s",
-                    action,
-                    msg,
-                    _safe_params(params),
-                )
-                return None
-            return resp
+            # 兼容分支：少数适配器返回未拆包的完整响应信封。
+            # 仅当同时含 status 与 retcode 时才认定为信封，避免把恰好带
+            # status 字段的业务 data 误判。
+            if isinstance(resp, dict) and "status" in resp and "retcode" in resp:
+                if resp.get("status") == "failed":
+                    msg = resp.get("msg") or resp.get("wording") or "unknown error"
+                    log = logger.debug if is_query else logger.warning
+                    log(
+                        "[idg] action %s failed: %s | params=%s",
+                        action,
+                        msg,
+                        _safe_params(params),
+                    )
+                    return None
+                data = resp.get("data")
+                return {} if data is None else data
+            # 标准路径：aiocqhttp 已拆包，未抛异常即成功。
+            # 写操作 data 为 null，用 {} 表示「成功但无数据」。
+            return {} if resp is None else resp
         except asyncio.TimeoutError:
             log = logger.debug if is_query else logger.warning
             log("[idg] action %s timed out | params=%s", action, _safe_params(params))
@@ -78,7 +107,7 @@ class OneBotClient:
             log(
                 "[idg] action %s error: %s | params=%s",
                 action,
-                exc,
+                _describe_exc(exc),
                 _safe_params(params),
             )
             return None
