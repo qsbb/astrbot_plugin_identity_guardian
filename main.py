@@ -30,6 +30,14 @@ from .core.onebot import OneBotClient
 from .core.policy import PolicyEngine
 from .core.prompts import SECURITY_RULES, build_identity_prompt
 from .core.relationship import RelationshipService
+from .core.request_context import (
+    OWNER_IDENTITY_GUARDIAN,
+    PHASE_LLM_REQUEST,
+    add_reason,
+    ensure_context,
+    set_artifact,
+    set_flag,
+)
 from .core.welcome import WelcomeService
 
 PLUGIN_NAME = "astrbot_plugin_identity_guardian"
@@ -80,6 +88,7 @@ def _resolve_llm_request(*candidates: Any) -> Any | None:
 class IdentityGuardianPlugin(Star):
     """凝心溯溪-序插件。"""
 
+    PLUGIN_HEALTH_CONTRACT = "plugin.health@1.0"
     _current_instance: Any = None
     _PLUGIN_IDENTIFIERS = (PLUGIN_NAME, "IdentityGuardianPlugin")
 
@@ -139,6 +148,26 @@ class IdentityGuardianPlugin(Star):
             self.config.auto_moderate,
             self.config.enable_api_guard,
         )
+
+    def plugin_health(self) -> dict[str, object]:
+        configured = bool(getattr(getattr(self, "config", None), "enabled", False))
+        services_ready = not configured or all(
+            getattr(self, name, None) is not None
+            for name in ("identity", "policy", "cooldown", "confirm")
+        )
+        stopped = bool(getattr(self, "_stopped", False)) if configured else False
+        checks = {
+            "config_ready": getattr(self, "config", None) is not None,
+            "services_ready": services_ready,
+            "guard_accepting_actions": not stopped,
+        }
+        reasons = [name.upper() for name, passed in checks.items() if not passed]
+        return {
+            "status": "ok" if not reasons else "degraded",
+            "checks": checks,
+            "reasons": reasons,
+            "version": __version__,
+        }
 
     # ------------------------------------------------------------------
     # 热重载防护
@@ -324,6 +353,8 @@ class IdentityGuardianPlugin(Star):
         if not self_id or not sender_id:
             return
 
+        request_context = ensure_context(event, PHASE_LLM_REQUEST)
+
         plugin._ensure_llm_caller()
 
         # 构建身份上下文
@@ -358,6 +389,29 @@ class IdentityGuardianPlugin(Star):
         # 构建提示词
         prompt = build_identity_prompt(actor, allowed, group_meta)
 
+        def mark_boundary_ready() -> None:
+            set_flag(
+                request_context,
+                OWNER_IDENTITY_GUARDIAN,
+                "boundary_ready",
+                True,
+            )
+            set_artifact(
+                request_context,
+                OWNER_IDENTITY_GUARDIAN,
+                "boundary",
+                {
+                    "bot_role": str(actor.bot_role),
+                    "allowed_action_count": len(allowed),
+                    "filtered_tool_count": removed,
+                },
+            )
+            add_reason(
+                request_context,
+                OWNER_IDENTITY_GUARDIAN,
+                "IDENTITY_BOUNDARY_READY",
+            )
+
         # 注入到 extra_user_content_parts
         try:
             from astrbot.core.agent.message import TextPart
@@ -367,6 +421,7 @@ class IdentityGuardianPlugin(Star):
                 parts.append(TextPart(text=prompt))
                 # 安全规则仅在会话首次注入
                 parts.append(TextPart(text=SECURITY_RULES))
+                mark_boundary_ready()
                 return
         except Exception as exc:
             plugin.logger.debug("%s TextPart inject failed: %s", LOG_PREFIX, exc)
@@ -375,7 +430,13 @@ class IdentityGuardianPlugin(Star):
         try:
             current = getattr(req, "system_prompt", None) or ""
             req.system_prompt = current + "\n\n" + prompt + "\n\n" + SECURITY_RULES
+            mark_boundary_ready()
         except Exception as exc:
+            add_reason(
+                request_context,
+                OWNER_IDENTITY_GUARDIAN,
+                "IDENTITY_BOUNDARY_INJECTION_FAILED",
+            )
             plugin.logger.warning(
                 "%s prompt inject fallback failed: %s", LOG_PREFIX, exc
             )
@@ -574,9 +635,15 @@ class IdentityGuardianPlugin(Star):
 
         # 二次确认
         if decision.requires_confirmation:
+            confirm_action = decision.action
+            confirm_params = dict(decision.params)
+            # 延迟执行时 event 的发送者会变成审批人，必须把原目标固化进参数。
+            if confirm_action in {"mute_current_sender", "request_self_mute"}:
+                confirm_action = "mute_member"
+                confirm_params["user_id"] = target_id or actor.requester_id
             confirm_id = self.confirm.create(
-                action=decision.action,
-                params=decision.params,
+                action=confirm_action,
+                params=confirm_params,
                 group_id=actor.group_id,
                 target_user=target_id or actor.requester_id,
             )
@@ -585,6 +652,45 @@ class IdentityGuardianPlugin(Star):
         # 执行
         result = await self._execute_action(event, decision, target_id)
         return result
+
+    async def _approve_pending_action(
+        self, event: AstrMessageEvent, confirm_id: str
+    ) -> str:
+        """在原群内重新授权并原子消费待确认操作。"""
+        entry = self.confirm.get(confirm_id)
+        if entry is None:
+            return f"未找到确认 ID: {confirm_id}"
+
+        current_group = str(event.get_group_id() or "")
+        if not current_group or current_group != str(entry.group_id):
+            return "该确认只能在创建它的群聊中审批。"
+        if not self._check_guard():
+            return "操作已被安全护栏拦截（紧急停止或熔断）。"
+
+        actor = await self._get_actor(event, entry.target_user)
+        if actor is None:
+            return "无法获取审批人的身份上下文。"
+        decision = self.policy.evaluate(
+            actor,
+            entry.action,
+            dict(entry.params),
+            TriggerSource.EXPLICIT_REQUEST.value,
+        )
+        if not decision.allowed:
+            return f"审批时重新校验未通过：{decision.reason}。"
+
+        # 只有全部实时校验通过后才消费，避免校验失败导致确认记录丢失。
+        consumed = self.confirm.approve(confirm_id)
+        if consumed is None:
+            return f"确认 ID 已被处理: {confirm_id}"
+        executable = ActionDecision(
+            allowed=True,
+            action=decision.action,
+            params=decision.params,
+            requires_confirmation=False,
+        )
+        result = await self._execute_action(event, executable, entry.target_user)
+        return f"已批准 {entry.action}。\n{result}"
 
     async def _execute_readonly(
         self,
@@ -1128,6 +1234,7 @@ class IdentityGuardianPlugin(Star):
         """凝心溯溪-序指令组。"""
         pass
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @idg_group.command("status")
     async def idg_status(self, event: AstrMessageEvent):
         """查看插件状态。"""
@@ -1136,7 +1243,12 @@ class IdentityGuardianPlugin(Star):
             yield event.plain_result("插件初始化中。")
             return
         stats = plugin.cooldown.stats()
-        pending = plugin.confirm.list_pending()
+        current_group = str(event.get_group_id() or "")
+        pending = [
+            item
+            for item in plugin.confirm.list_pending()
+            if current_group and str(item.group_id) == current_group
+        ]
         lines = [
             f"凝心溯溪-序 {__version__}",
             f"状态: {'已停止' if plugin._stopped else '运行中'}",
@@ -1155,6 +1267,7 @@ class IdentityGuardianPlugin(Star):
                 lines.append(f"  - [{p.confirm_id}] {p.action} → {p.target_user}")
         yield event.plain_result("\n".join(lines))
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @idg_group.command("stop")
     async def idg_stop(self, event: AstrMessageEvent):
         """紧急停止所有管理工具。"""
@@ -1165,6 +1278,7 @@ class IdentityGuardianPlugin(Star):
         plugin._stopped = True
         yield event.plain_result("已紧急停止所有管理操作。使用 /idg resume 恢复。")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @idg_group.command("resume")
     async def idg_resume(self, event: AstrMessageEvent):
         """恢复管理工具。"""
@@ -1175,6 +1289,7 @@ class IdentityGuardianPlugin(Star):
         plugin._stopped = False
         yield event.plain_result("已恢复管理操作。")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @idg_group.command("reset_breaker")
     async def idg_reset_breaker(self, event: AstrMessageEvent):
         """重置熔断器。"""
@@ -1185,6 +1300,7 @@ class IdentityGuardianPlugin(Star):
         plugin.cooldown.reset_breaker()
         yield event.plain_result("熔断器已重置。")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @idg_group.command("refresh")
     async def idg_refresh(self, event: AstrMessageEvent):
         """刷新身份缓存。"""
@@ -1195,6 +1311,7 @@ class IdentityGuardianPlugin(Star):
         plugin.identity.clear_cache()
         yield event.plain_result("身份缓存已清空，将在下次请求时重新获取。")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @idg_group.command("approve")
     async def idg_approve(self, event: AstrMessageEvent, confirm_id: str = ""):
         """批准待确认操作。用法: /idg approve <confirm_id>"""
@@ -1205,20 +1322,10 @@ class IdentityGuardianPlugin(Star):
         if not confirm_id:
             yield event.plain_result("用法: /idg approve <confirm_id>")
             return
-        entry = plugin.confirm.approve(confirm_id)
-        if entry is None:
-            yield event.plain_result(f"未找到确认 ID: {confirm_id}")
-            return
-        # 执行被确认的操作
-        decision = ActionDecision(
-            allowed=True,
-            action=entry.action,
-            params=entry.params,
-            requires_confirmation=False,
-        )
-        result = await plugin._execute_action(event, decision, entry.target_user)
-        yield event.plain_result(f"已批准 {entry.action}。\n{result}")
+        result = await plugin._approve_pending_action(event, confirm_id)
+        yield event.plain_result(result)
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @idg_group.command("reject")
     async def idg_reject(self, event: AstrMessageEvent, confirm_id: str = ""):
         """拒绝待确认操作。用法: /idg reject <confirm_id>"""
@@ -1228,6 +1335,13 @@ class IdentityGuardianPlugin(Star):
             return
         if not confirm_id:
             yield event.plain_result("用法: /idg reject <confirm_id>")
+            return
+        pending = plugin.confirm.get(confirm_id)
+        if pending is None:
+            yield event.plain_result(f"未找到确认 ID: {confirm_id}")
+            return
+        if str(event.get_group_id() or "") != str(pending.group_id):
+            yield event.plain_result("该确认只能在创建它的群聊中拒绝。")
             return
         entry = plugin.confirm.reject(confirm_id)
         if entry is None:

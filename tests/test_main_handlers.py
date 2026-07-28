@@ -11,6 +11,8 @@
 
 import functools
 import importlib.util
+import ast
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -248,3 +250,99 @@ def test_metadata_version_matches_package_version():
     assert init_match, "__init__.py 缺少 __version__"
 
     assert match.group(1) == init_match.group(1)
+
+
+# ----------------------------------------------------------- 管理命令安全
+
+
+def test_sensitive_idg_commands_require_admin_permission():
+    tree = ast.parse((PLUGIN_ROOT / "main.py").read_text(encoding="utf-8"))
+    sensitive = {
+        "idg_status",
+        "idg_stop",
+        "idg_resume",
+        "idg_reset_breaker",
+        "idg_refresh",
+        "idg_approve",
+        "idg_reject",
+    }
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in sensitive:
+            continue
+        found.add(node.name)
+        names = [ast.unparse(item) for item in node.decorator_list]
+        assert any("permission_type" in name and "ADMIN" in name for name in names)
+    assert found == sensitive
+
+
+class ApprovalEvent:
+    def __init__(self, group_id="100"):
+        self.group_id = group_id
+
+    def get_group_id(self):
+        return self.group_id
+
+    @staticmethod
+    def plain_result(text):
+        return text
+
+
+def test_approval_is_bound_to_original_group_and_keeps_pending_entry():
+    plugin = plugin_instance()
+    plugin.confirm = main.ConfirmService()
+    confirm_id = plugin.confirm.create("kick_member", {"user_id": "9"}, "100", "9")
+
+    result = asyncio.run(plugin._approve_pending_action(ApprovalEvent("200"), confirm_id))
+
+    assert "创建它的群聊" in result
+    assert plugin.confirm.get(confirm_id) is not None
+
+
+def test_approval_rechecks_live_policy_before_consuming(monkeypatch):
+    plugin = plugin_instance()
+    plugin.confirm = main.ConfirmService()
+    confirm_id = plugin.confirm.create("kick_member", {"user_id": "9"}, "100", "9")
+    plugin._stopped = False
+    plugin.config = SimpleNamespace(enable_api_guard=False)
+    plugin.cooldown = SimpleNamespace(check_breaker=lambda: False)
+
+    async def get_actor(event, target_id):
+        return SimpleNamespace(group_id="100")
+
+    plugin._get_actor = get_actor
+    plugin.policy = SimpleNamespace(
+        evaluate=lambda *args: main.ActionDecision(
+            allowed=False, action="kick_member", reason="权限已变化"
+        )
+    )
+    monkeypatch.setattr(plugin, "_execute_action", lambda *args: None)
+
+    result = asyncio.run(plugin._approve_pending_action(ApprovalEvent(), confirm_id))
+
+    assert "重新校验未通过" in result
+    assert plugin.confirm.get(confirm_id) is not None
+
+
+def test_rejection_is_bound_to_original_group():
+    plugin = plugin_instance()
+    plugin.confirm = main.ConfirmService()
+    confirm_id = plugin.confirm.create("kick_member", {"user_id": "9"}, "100", "9")
+    main.IdentityGuardianPlugin._current_instance = plugin
+    try:
+        output = asyncio.run(
+            _collect_async_generator(
+                plugin.idg_reject(ApprovalEvent("200"), confirm_id)
+            )
+        )
+    finally:
+        main.IdentityGuardianPlugin._current_instance = None
+
+    assert "创建它的群聊" in output[0]
+    assert plugin.confirm.get(confirm_id) is not None
+
+
+async def _collect_async_generator(generator):
+    return [item async for item in generator]

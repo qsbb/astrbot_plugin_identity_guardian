@@ -73,6 +73,7 @@ _mock_filter.PlatformAdapterType = MagicMock()
 _mock_filter.PlatformAdapterType.AIOCQHTTP = "aiocqhttp"
 _mock_filter.on_llm_request = lambda *a, **kw: lambda f: f
 _mock_filter.event_message_type = lambda *a, **kw: lambda f: f
+_mock_filter.permission_type = lambda *a, **kw: lambda f: f
 _mock_filter.llm_tool = lambda *a, **kw: lambda f: f
 _mock_filter.command_group = lambda *a, **kw: lambda f: f
 _mock_filter.on_llm_response = lambda *a, **kw: lambda f: f
