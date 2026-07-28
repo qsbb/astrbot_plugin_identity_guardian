@@ -207,6 +207,14 @@ class JoinAuditService:
                 reason="LLM 响应解析失败",
             )
 
+    def should_auto_approve(self, decision: JoinDecision) -> bool:
+        """仅 ``approve_only`` 模式允许高置信度正确答案自动通过。"""
+        return (
+            self.config.join_audit_mode == "approve_only"
+            and decision.verdict == JoinVerdict.CORRECT.value
+            and decision.confidence >= self.config.join_approve_threshold
+        )
+
     async def handle_request(
         self,
         event: Any,
@@ -233,11 +241,8 @@ class JoinAuditService:
             evidence=evidence,
         )
 
-        # 仅高置信度正确时自动通过
-        if (
-            decision.verdict == JoinVerdict.CORRECT.value
-            and decision.confidence >= self.config.join_approve_threshold
-        ):
+        # notify_only 只做判断和通知，绝不能触发 OneBot 放行接口。
+        if self.should_auto_approve(decision):
             ok, err = await self.onebot.set_group_add_request(
                 event, flag, sub_type, approve=True, reason=""
             )

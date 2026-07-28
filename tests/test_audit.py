@@ -1,5 +1,6 @@
 """入群审核测试。"""
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -28,6 +29,27 @@ def _make_service(config, llm_caller=None):
     knowledge = KnowledgeService(config)
     onebot = OneBotClient()
     return JoinAuditService(config, onebot, knowledge, llm_caller)
+
+
+class RecordingOneBot:
+    def __init__(self):
+        self.calls = []
+
+    async def set_group_add_request(
+        self, event, flag, sub_type, approve=True, reason=""
+    ):
+        self.calls.append((event, flag, sub_type, approve, reason))
+        return True, ""
+
+
+def _correct_request():
+    return {
+        "flag": "request-flag",
+        "sub_type": "add",
+        "user_id": 123456,
+        "group_id": 789,
+        "comment": "问题：1+1=?\n答案：2",
+    }
 
 
 def test_parse_request_basic():
@@ -181,3 +203,30 @@ def test_empty_entries_skipped():
     cfg = _make_config(join_questions=["", "  ", "1+1=?|2"])
     questions = cfg.join_questions
     assert len(questions) == 1
+
+
+def test_notify_only_never_executes_automatic_approval():
+    """notify_only 即使判断为高置信度正确，也不能调用放行接口。"""
+    svc = _make_service(_make_config(join_audit_mode="notify_only"))
+    onebot = RecordingOneBot()
+    svc.onebot = onebot
+
+    decision = asyncio.run(svc.handle_request(object(), _correct_request()))
+
+    assert decision.verdict == JoinVerdict.CORRECT.value
+    assert decision.confidence >= 0.9
+    assert svc.should_auto_approve(decision) is False
+    assert onebot.calls == []
+
+
+def test_approve_only_executes_high_confidence_approval():
+    """approve_only 保留原有的高置信度自动通过行为。"""
+    svc = _make_service(_make_config(join_audit_mode="approve_only"))
+    onebot = RecordingOneBot()
+    svc.onebot = onebot
+
+    decision = asyncio.run(svc.handle_request(object(), _correct_request()))
+
+    assert svc.should_auto_approve(decision) is True
+    assert len(onebot.calls) == 1
+    assert onebot.calls[0][1:] == ("request-flag", "add", True, "")

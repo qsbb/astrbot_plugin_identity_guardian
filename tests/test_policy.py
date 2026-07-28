@@ -312,6 +312,50 @@ def test_kick_member_by_normal():
 
 
 # ------------------------------------------------------------------
+# approve_join_request 测试
+# ------------------------------------------------------------------
+
+
+def test_notify_only_blocks_join_approval_tool():
+    """notify_only 必须在策略层阻止 LLM 工具绕过自动审核模式。"""
+    engine = PolicyEngine(_make_config(join_audit_mode="notify_only"))
+    actor = _make_actor(
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="friendly",
+    )
+
+    decision = engine.evaluate(
+        actor,
+        "approve_join_request",
+        {"flag": "request-flag", "approve": True},
+        TriggerSource.JOIN_AUDIT.value,
+    )
+
+    assert decision.allowed is False
+    assert "模式" in decision.reason
+
+
+def test_approve_only_allows_join_approval_tool_for_friendly_requester():
+    """approve_only 下保留已有的授权检查与工具能力。"""
+    engine = PolicyEngine(_make_config(join_audit_mode="approve_only"))
+    actor = _make_actor(
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="friendly",
+    )
+
+    decision = engine.evaluate(
+        actor,
+        "approve_join_request",
+        {"flag": "request-flag", "approve": True},
+        TriggerSource.JOIN_AUDIT.value,
+    )
+
+    assert decision.allowed is True
+
+
+# ------------------------------------------------------------------
 # set_member_card 测试
 # ------------------------------------------------------------------
 

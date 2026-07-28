@@ -501,6 +501,12 @@ class PolicyEngine:
         self, context: ActorContext, params: dict[str, Any], is_friendly: bool
     ) -> ActionDecision:
         """检查 approve_join_request 授权。"""
+        if self.config.join_audit_mode != "approve_only":
+            return ActionDecision(
+                allowed=False,
+                action="approve_join_request",
+                reason="当前入群审核模式不允许自动通过",
+            )
         if not is_friendly:
             return ActionDecision(
                 allowed=False,

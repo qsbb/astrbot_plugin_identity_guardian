@@ -537,8 +537,11 @@ class IdentityGuardianPlugin(Star):
         try:
             decision = await self.join_audit.handle_request(event, raw)
 
-            # 通知人工（可选）
-            if decision.verdict != "correct" and self.config.audit_notify_targets:
+            # notify_only 下所有结论都交由人工；approve_only 下仅通知未自动放行项。
+            if (
+                not self.join_audit.should_auto_approve(decision)
+                and self.config.audit_notify_targets
+            ):
                 await self._notify_audit_targets(event, raw, decision)
         except Exception as exc:
             self.logger.warning("%s join audit error: %s", LOG_PREFIX, exc)

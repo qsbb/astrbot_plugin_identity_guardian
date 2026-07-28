@@ -344,5 +344,39 @@ def test_rejection_is_bound_to_original_group():
     assert plugin.confirm.get(confirm_id) is not None
 
 
+def test_notify_only_notifies_even_when_answer_is_correct():
+    """notify_only 不自动放行时，高置信度正确结论也必须交给人工。"""
+    plugin = plugin_instance()
+    plugin.config = SimpleNamespace(
+        join_audit_mode="notify_only",
+        audit_notify_targets=["aiocqhttp:GroupMessage:100"],
+    )
+    decision = SimpleNamespace(verdict="correct", confidence=0.95, reason="回答正确")
+
+    class StubJoinAudit:
+        async def handle_request(self, event, raw):
+            return decision
+
+        @staticmethod
+        def should_auto_approve(result):
+            return False
+
+    plugin.join_audit = StubJoinAudit()
+    plugin._ensure_llm_caller = lambda: None
+    notified = []
+
+    async def record_notification(event, raw, result):
+        notified.append((event, raw, result))
+
+    plugin._notify_audit_targets = record_notification
+    plugin.logger = SimpleNamespace(warning=lambda *args, **kwargs: None)
+    event = ApprovalEvent()
+    raw = {"request_type": "group", "group_id": "100", "user_id": "9"}
+
+    asyncio.run(plugin._handle_request(event, raw))
+
+    assert notified == [(event, raw, decision)]
+
+
 async def _collect_async_generator(generator):
     return [item async for item in generator]
