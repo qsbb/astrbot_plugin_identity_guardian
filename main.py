@@ -280,7 +280,11 @@ class IdentityGuardianPlugin(Star):
             self.logger.debug("%s tool filter skipped: %s", LOG_PREFIX, exc)
             return 0
 
-    @filter.on_llm_request()
+    # priority=800：凝心溯溪系列 on_llm_request 区间为 200-800，数值越大越先执行。
+    # 身份与行动边界属于安全层，必须先于知识注入（知 700）、表达约束（情 600）和
+    # 沉默判断（言 500）生效；不显式声明时实际顺序取决于 AstrBot 插件加载次序，
+    # 会导致安全边界在知识注入之后才生效这类不可复现故障。
+    @filter.on_llm_request(priority=800)
     async def on_llm_request(
         self, event: AstrMessageEvent, req: Any, *args: Any, **kwargs: Any
     ) -> None:

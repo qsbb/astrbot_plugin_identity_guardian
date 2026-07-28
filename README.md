@@ -17,7 +17,7 @@
 
 ## 当前实现信息
 
-- 当前版本：`0.1.6`；AstrBot 兼容范围：`>=4.17,<5`；主要支持 `aiocqhttp`。
+- 版本号以 `metadata.yaml` 为唯一事实源；AstrBot 兼容范围：`>=4.17,<5`；主要支持 `aiocqhttp`。
 - 命令入口：`/idg` 命令组，支持状态、停止/恢复、熔断重置、身份刷新和待确认操作处理。
 - 页面入口：当前实现未提供固定 Plugin Page 管理页；配置在 AstrBot 插件配置中完成。
 
@@ -328,7 +328,7 @@ ActionDecision = PolicyEngine.evaluate(
 | --- | --- |
 | 插件名 | `astrbot_plugin_identity_guardian` |
 | 展示名 | 凝心溯溪-序 |
-| 当前版本 | `0.1.6` |
+| 当前版本 | 见 `metadata.yaml`（唯一事实源） |
 | 作者 | Justice-ocr |
 | AstrBot 版本 | `>=4.17,<5` |
 | 支持平台 | `aiocqhttp`（NapCat / Lagrange / LLOneBot 等 OneBot V11 实现） |
