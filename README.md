@@ -20,6 +20,7 @@
 - 版本号以 `metadata.yaml` 为唯一事实源；AstrBot 兼容范围：`>=4.17,<5`；主要支持 `aiocqhttp`。
 - 命令入口：`/idg` 命令组，支持状态、停止/恢复、熔断重置、身份刷新和待确认操作处理。
 - 页面入口：当前实现未提供固定 Plugin Page 管理页；配置在 AstrBot 插件配置中完成。
+- 权限身份始终取当前平台事件的原始 `sender_id` 与 bot/group role；情中配置的跨平台自然人归属只用于关系和记忆连续性，不能继承主人、友好、保护、黑名单或群管理权限。
 
 ## 项目定位
 
@@ -43,6 +44,7 @@
 5. **只自动放行，不自动拒绝**：入群答案只有在高置信度正确时自动通过；错误、不确定、知识不足或联动失败均保持待审，交由其他管理员处理。
 6. **决策可追溯**：每次有副作用的行动记录请求者、目标、关系、授权依据、参数、结果与简短决策摘要。
 7. **平台隔离**：仅 aiocqhttp 适配器启用 OneBot 行动；其他平台仅注入可获取的身份与关系信息。
+8. **身份双轨**：权限轨只认原始平台账号，连续性轨可由情映射到同一自然人；两条轨道不互相提权。
 
 ## 功能概览
 
@@ -61,6 +63,10 @@
 | 审计日志 | 所有有副作用的行动写入 `audit.jsonl`，便于复盘与申诉 |
 | 紧急停止 | `/idg stop` 一键停用所有管理工具，仅保留身份注入 |
 | 知识库联动 | 入群审核可查询 active_learner 知识库作为判定证据 |
+
+序会把“身份边界”和“安全规则”登记为结构化提示片段。安装言时，由言先于知识与关系片段统一
+编排并去重；未安装言时仍沿用原直接注入。无论哪条路径，最终 API 执行前都会再次经过
+`PolicyEngine` 和 API 护栏，提示词本身不构成授权。
 
 ## 安装
 
@@ -135,6 +141,17 @@ pip install -r requirements.txt
 | `join_approve_threshold` | float | `0.9` | 自动通过的最低置信度 |
 | `audit_notify_targets` | list<string> | `[]` | 审核人工通知目标列表（AstrBot 会话 ID，unified_msg_origin 格式）。例如 `["aiocqhttp:GroupMessage:123456"]` |
 | `pending_ttl_hours` | int | `24` | 待审请求保留时长（小时） |
+
+`join_audit_mode` 的执行边界：
+
+| 模式 | 自动通过 | 自动拒绝 | 通知管理员 |
+|---|---|---|---|
+| `off` | 否 | 否 | 否 |
+| `approve_only` | 仅高置信度正确时 | 永不 | 可按配置通知待审项 |
+| `notify_only` | 永不 | 永不 | 是，只生成待审通知 |
+
+`notify_only` 不会调用 OneBot 的通过或拒绝接口；LLM 判断、知识桥接异常、答案错误或置信度不足
+也都不能让它自动执行申请操作。
 
 ### 知识库联动
 
@@ -343,11 +360,16 @@ ActionDecision = PolicyEngine.evaluate(
 python -m ruff check .
 python -m ruff format --check .
 
-# 单元测试（59 个用例）
+# 单元测试
 python -m pytest tests/ -v
 ```
 
 测试覆盖：策略引擎（policy）、能力映射（capability）、配置解析（config）、冷却与熔断（cooldown）、内容审核（moderation）、入群审核（audit）。
+
+## 维护约定
+
+任何可观察功能、配置项或安全边界的增删改，必须在同一批变更中同步 README、CHANGELOG 的
+`Unreleased`、配置 schema 与回归测试。版本号在实现、文档和验证完成后由发布者确认。
 
 ## 免责声明
 

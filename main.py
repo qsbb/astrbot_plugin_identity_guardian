@@ -33,6 +33,7 @@ from .core.relationship import RelationshipService
 from .core.request_context import (
     OWNER_IDENTITY_GUARDIAN,
     PHASE_LLM_REQUEST,
+    add_prompt_fragment,
     add_reason,
     ensure_context,
     set_artifact,
@@ -388,6 +389,24 @@ class IdentityGuardianPlugin(Star):
 
         # 构建提示词
         prompt = build_identity_prompt(actor, allowed, group_meta)
+        add_prompt_fragment(
+            request_context,
+            OWNER_IDENTITY_GUARDIAN,
+            "identity.boundary",
+            prompt,
+            priority=100,
+            source="astrbot_plugin_identity_guardian",
+            metadata={"kind": "platform_permission_boundary"},
+        )
+        add_prompt_fragment(
+            request_context,
+            OWNER_IDENTITY_GUARDIAN,
+            "identity.security_rules",
+            SECURITY_RULES,
+            priority=110,
+            source="astrbot_plugin_identity_guardian",
+            metadata={"kind": "security_rules"},
+        )
 
         def mark_boundary_ready() -> None:
             set_flag(
@@ -404,6 +423,7 @@ class IdentityGuardianPlugin(Star):
                     "bot_role": str(actor.bot_role),
                     "allowed_action_count": len(allowed),
                     "filtered_tool_count": removed,
+                    "permission_identity": {"mode": "raw_platform_account"},
                 },
             )
             add_reason(

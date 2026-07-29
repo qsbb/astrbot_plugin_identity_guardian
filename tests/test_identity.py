@@ -1,6 +1,7 @@
 """身份解析与角色缓存测试。"""
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 from core.config import Config
@@ -121,3 +122,21 @@ def test_actor_context_carries_bot_id():
     )
     assert actor.bot_id == "555"
     assert actor.bot_role == "member"
+
+
+def test_canonical_person_alias_never_grants_platform_permission():
+    config = Config({"owner_users": ["qq-raw-10001"]})
+
+    assert config.is_owner("qq-raw-10001")
+    assert not config.is_owner("person_summer")
+    assert not config.is_owner("telegram-raw-42")
+
+
+def test_shared_boundary_summary_never_contains_account_identifiers():
+    source = (Path(__file__).resolve().parents[1] / "main.py").read_text("utf-8")
+    start = source.index('"permission_identity"')
+    summary = source[start : source.index("add_reason(", start)]
+
+    assert '"mode": "raw_platform_account"' in summary
+    assert '"platform_id"' not in summary
+    assert '"user_id"' not in summary
