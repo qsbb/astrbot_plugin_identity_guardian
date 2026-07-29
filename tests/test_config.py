@@ -19,6 +19,7 @@ def test_defaults():
     assert cfg.join_audit_mode == "off"
     assert cfg.auto_moderate is False
     assert cfg.enable_api_guard is True
+    assert cfg.proactive_delivery_targets == []
 
 
 def test_list_parsing():
@@ -28,11 +29,13 @@ def test_list_parsing():
             "owner_users": ["111", "222"],
             "protected_users": ["333"],
             "moderation_rules": ["spam.*", "ad.*"],
+            "proactive_delivery_targets": ["aiocqhttp:FriendMessage:111"],
         }
     )
     assert cfg.owner_users == ["111", "222"]
     assert cfg.protected_users == ["333"]
     assert cfg.moderation_rules == ["spam.*", "ad.*"]
+    assert cfg.proactive_delivery_targets == ["aiocqhttp:FriendMessage:111"]
 
 
 def test_list_from_string():

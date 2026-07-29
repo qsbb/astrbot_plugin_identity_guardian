@@ -165,6 +165,16 @@
     },
     "hint": "填写 AstrBot 会话 ID（unified_msg_origin 格式）。高破坏性操作需人工确认时通知这些会话。例如：[\"aiocqhttp:PrivateMessage:888888\"]"
   },
+  "proactive_delivery_targets": {
+    "description": "[安全] 主动消息私聊收件白名单（完整 UMO）",
+    "type": "list",
+    "default": [],
+    "obvious_hint": true,
+    "items": {
+      "type": "string"
+    },
+    "hint": "只填写已确认属于 bot 主人的完整私聊 unified_msg_origin，例如 aiocqhttp:FriendMessage:888888。必须精确匹配；群聊、频道、未列出的会话和情中的跨平台别名均不会获得主动发送权限。"
+  },
   "pending_ttl_hours": {
     "description": "待审请求保留时长（小时）",
     "type": "int",

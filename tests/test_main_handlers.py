@@ -252,6 +252,62 @@ def test_metadata_version_matches_package_version():
     assert match.group(1) == init_match.group(1)
 
 
+def test_proactive_authorization_is_exact_allowlisted_private_target():
+    plugin = plugin_instance()
+    plugin.config = main.Config(
+        {
+            "proactive_delivery_targets": [
+                "aiocqhttp:FriendMessage:owner-1",
+                "telegram:PrivateMessage:owner-2",
+            ]
+        }
+    )
+    plugin._stopped = False
+
+    contract = plugin.proactive_delivery_authorization_contract()
+    assert contract["name"] == "identity.proactive_authorization"
+    assert contract["version"] == "1.0"
+    assert contract["cross_platform_inheritance"] is False
+
+    allowed = plugin.authorize_proactive_delivery("aiocqhttp:FriendMessage:owner-1")
+    assert allowed["authorized"] is True
+    assert allowed["channel"] == "private"
+    assert allowed["owner_confirmed"] is True
+
+    assert (
+        plugin.authorize_proactive_delivery("aiocqhttp:FriendMessage:someone-else")[
+            "reason"
+        ]
+        == "target_not_authorized"
+    )
+    assert (
+        plugin.authorize_proactive_delivery("aiocqhttp:GroupMessage:owner-1")["reason"]
+        == "private_target_required"
+    )
+    assert (
+        plugin.authorize_proactive_delivery("telegram:ChannelMessage:owner-2")["reason"]
+        == "private_target_required"
+    )
+    for invalid_target in (
+        ":PrivateMessage:",
+        "telegram:FriendRequest:owner-2",
+        "telegram:IndirectMessage:owner-2",
+        "telegram:PrivateMessage:",
+    ):
+        assert (
+            plugin.authorize_proactive_delivery(invalid_target)["reason"]
+            == "private_target_required"
+        )
+
+    plugin.config = main.Config(
+        {"enabled": False, "proactive_delivery_targets": ["x:PrivateMessage:y"]}
+    )
+    assert (
+        plugin.authorize_proactive_delivery("x:PrivateMessage:y")["reason"]
+        == "plugin_disabled"
+    )
+
+
 # ----------------------------------------------------------- 管理命令安全
 
 
@@ -295,7 +351,9 @@ def test_approval_is_bound_to_original_group_and_keeps_pending_entry():
     plugin.confirm = main.ConfirmService()
     confirm_id = plugin.confirm.create("kick_member", {"user_id": "9"}, "100", "9")
 
-    result = asyncio.run(plugin._approve_pending_action(ApprovalEvent("200"), confirm_id))
+    result = asyncio.run(
+        plugin._approve_pending_action(ApprovalEvent("200"), confirm_id)
+    )
 
     assert "创建它的群聊" in result
     assert plugin.confirm.get(confirm_id) is not None

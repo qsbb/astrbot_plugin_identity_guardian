@@ -43,6 +43,11 @@ from .core.welcome import WelcomeService
 
 PLUGIN_NAME = "astrbot_plugin_identity_guardian"
 LOG_PREFIX = "[idg]"
+PROACTIVE_AUTH_CONTRACT_NAME = "identity.proactive_authorization"
+PROACTIVE_AUTH_CONTRACT_VERSION = "1.0"
+_PRIVATE_UMO_MESSAGE_TYPES = frozenset(
+    {"friendmessage", "privatemessage", "directmessage"}
+)
 
 
 def _resolve_event(*candidates: Any) -> Any | None:
@@ -168,6 +173,44 @@ class IdentityGuardianPlugin(Star):
             "checks": checks,
             "reasons": reasons,
             "version": __version__,
+        }
+
+    def proactive_delivery_authorization_contract(self) -> dict[str, object]:
+        """Declare exact-target, private-only authorization for proactive delivery."""
+        return {
+            "name": PROACTIVE_AUTH_CONTRACT_NAME,
+            "version": PROACTIVE_AUTH_CONTRACT_VERSION,
+            "plugin": PLUGIN_NAME,
+            "capabilities": ("authorize_private_target",),
+            "permission_identity_mode": "raw_platform_session",
+            "cross_platform_inheritance": False,
+        }
+
+    def authorize_proactive_delivery(self, recipient_umo: str) -> dict[str, object]:
+        target = str(recipient_umo or "").strip()
+        if not getattr(getattr(self, "config", None), "enabled", False):
+            return self._proactive_authorization(False, "plugin_disabled")
+        if bool(getattr(self, "_stopped", False)):
+            return self._proactive_authorization(False, "guard_stopped")
+        parts = target.split(":", 2)
+        if (
+            len(parts) != 3
+            or not all(part.strip() for part in parts)
+            or parts[1].casefold() not in _PRIVATE_UMO_MESSAGE_TYPES
+        ):
+            return self._proactive_authorization(False, "private_target_required")
+        if target not in self.config.proactive_delivery_targets:
+            return self._proactive_authorization(False, "target_not_authorized")
+        return self._proactive_authorization(True, "authorized_private_owner_target")
+
+    @staticmethod
+    def _proactive_authorization(authorized: bool, reason: str) -> dict[str, object]:
+        return {
+            "version": PROACTIVE_AUTH_CONTRACT_VERSION,
+            "authorized": bool(authorized),
+            "reason": reason,
+            "channel": "private" if authorized else "none",
+            "owner_confirmed": bool(authorized),
         }
 
     # ------------------------------------------------------------------

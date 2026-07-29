@@ -55,6 +55,7 @@ _DEFAULTS: dict[str, Any] = {
     "audit_llm_provider": "",
     "audit_notify_targets": [],
     "confirm_notify_targets": [],
+    "proactive_delivery_targets": [],
     "pending_ttl_hours": 24,
     "cross_group_violation": False,
     "enable_set_admin_revoke": False,
@@ -120,6 +121,7 @@ class Config:
             "join_questions",
             "audit_notify_targets",
             "confirm_notify_targets",
+            "proactive_delivery_targets",
         ):
             self._raw[key] = _parse_list(self._raw.get(key))
 
@@ -249,6 +251,14 @@ class Config:
     @property
     def confirm_notify_targets(self) -> list[str]:
         return [str(x) for x in self._raw.get("confirm_notify_targets", [])]
+
+    @property
+    def proactive_delivery_targets(self) -> list[str]:
+        return [
+            str(x).strip()
+            for x in self._raw.get("proactive_delivery_targets", [])
+            if str(x).strip()
+        ]
 
     @property
     def pending_ttl_hours(self) -> int:
