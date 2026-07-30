@@ -21,6 +21,12 @@ from .core.audit_log import AuditLogger
 from .core.capability import ALL_TOOL_NAMES, filter_request_tools_for_role
 from .core.config import Config
 from .core.confirm import ConfirmService
+from .core.context_bridge import (
+    CONTEXT_BRIDGE_AUTH_CONTRACT_NAME,
+    CONTEXT_BRIDGE_AUTH_CONTRACT_VERSION,
+    authorize as authorize_context_bridge_request,
+    decision as context_bridge_decision,
+)
 from .core.cooldown import CooldownService
 from .core.identity import IdentityManager
 from .core.knowledge import KnowledgeService
@@ -185,6 +191,31 @@ class IdentityGuardianPlugin(Star):
             "permission_identity_mode": "raw_platform_session",
             "cross_platform_inheritance": False,
         }
+
+    def context_bridge_authorization_contract(self) -> dict[str, object]:
+        """Declare the per-turn, read-only context bridge authorization contract."""
+        return {
+            "name": CONTEXT_BRIDGE_AUTH_CONTRACT_NAME,
+            "version": CONTEXT_BRIDGE_AUTH_CONTRACT_VERSION,
+            "plugin": PLUGIN_NAME,
+            "capabilities": ("authorize_read_only_context_bridge",),
+            "consent_lifetime": "current_event_only",
+            "grants_platform_action": False,
+        }
+
+    def authorize_context_bridge(
+        self, event: AstrMessageEvent, source_scope: str, target_scope: str
+    ) -> dict[str, object]:
+        """Authorize one read-only bridge without returning identity or message data."""
+        if not getattr(getattr(self, "config", None), "enabled", False):
+            return context_bridge_decision(False, "plugin_disabled")
+        if bool(getattr(self, "_stopped", False)):
+            return context_bridge_decision(False, "guard_stopped")
+        try:
+            return authorize_context_bridge_request(event, source_scope, target_scope)
+        except Exception as exc:  # pragma: no cover - 最终失败关闭护栏
+            self.logger.debug("%s context bridge authorization failed: %s", LOG_PREFIX, exc)
+            return context_bridge_decision(False, "authorization_failed")
 
     def authorize_proactive_delivery(self, recipient_umo: str) -> dict[str, object]:
         target = str(recipient_umo or "").strip()
