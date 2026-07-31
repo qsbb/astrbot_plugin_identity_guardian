@@ -11,7 +11,6 @@ import functools
 import pathlib
 from typing import Any
 
-from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
@@ -46,6 +45,12 @@ from .core.request_context import (
     set_flag,
 )
 from .core.welcome import WelcomeService
+from .series_diagnostics import (
+    diagnostic_clear as clear_diagnostic_events,
+    diagnostic_event,
+    diagnostic_events as read_diagnostic_events,
+    logger,
+)
 
 PLUGIN_NAME = "astrbot_plugin_identity_guardian"
 LOG_PREFIX = "[idg]"
@@ -93,7 +98,7 @@ def _resolve_llm_request(*candidates: Any) -> Any | None:
 
 @register(
     PLUGIN_NAME,
-    "Justice-ocr",
+    "凌溪",
     "凝心溯溪-序，关系感知、权限边界与群组行动",
     __version__,
 )
@@ -108,6 +113,7 @@ class IdentityGuardianPlugin(Star):
         super().__init__(context)
         self.context = context
         self.logger = logger
+        diagnostic_event("plugin.init", "身份边界插件开始初始化")
 
         # 数据目录
         self.data_dir = StarTools.get_data_dir(PLUGIN_NAME)
@@ -160,6 +166,16 @@ class IdentityGuardianPlugin(Star):
             self.config.auto_moderate,
             self.config.enable_api_guard,
         )
+        diagnostic_event(
+            "plugin.ready",
+            "身份边界插件初始化完成",
+            details={
+                "owner_count": len(self.config.owner_users),
+                "protected_count": len(self.config.protected_users),
+                "moderation_enabled": self.config.auto_moderate,
+                "api_guard_enabled": self.config.enable_api_guard,
+            },
+        )
 
     def plugin_health(self) -> dict[str, object]:
         configured = bool(getattr(getattr(self, "config", None), "enabled", False))
@@ -180,6 +196,22 @@ class IdentityGuardianPlugin(Star):
             "reasons": reasons,
             "version": __version__,
         }
+
+    def diagnostic_log_contract(self) -> dict[str, object]:
+        return {
+            "name": "series.diagnostics",
+            "version": "1.0",
+            "plugin": PLUGIN_NAME,
+            "capabilities": ("read", "clear"),
+            "storage": "memory_only",
+            "astrbot_log_propagation": False,
+        }
+
+    def diagnostic_events(self, after_seq: int = 0, limit: int = 200) -> dict[str, Any]:
+        return read_diagnostic_events(after_seq=after_seq, limit=limit)
+
+    def diagnostic_clear(self) -> None:
+        clear_diagnostic_events()
 
     def proactive_delivery_authorization_contract(self) -> dict[str, object]:
         """Declare exact-target, private-only authorization for proactive delivery."""
@@ -1537,6 +1569,7 @@ class IdentityGuardianPlugin(Star):
         self._cleanup_llm_tools()
         self._cleanup_star_handlers()
 
+        diagnostic_event("plugin.terminated", "身份边界插件已卸载")
         self.logger.info("%s plugin terminated", LOG_PREFIX)
 
     def _cleanup_llm_tools(self) -> None:

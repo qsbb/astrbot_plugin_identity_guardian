@@ -2,7 +2,7 @@
 
 > 凝心溯溪系列身份模块：让 bot 在 QQ 群里像真实成员一样理解「自己是谁、对方是谁、双方是什么关系、当前能做什么」，并把经过代码层授权的行动能力提供给 LLM。
 
-> **凝心溯溪系列** 当前完整插件清单为知、言、序、情、声、核：各插件职责独立、互不冲突，可按需组合使用，覆盖知识学习、对话调节、身份管理、关系状态、语音与更新管理。
+> **凝心溯溪系列** 当前完整插件清单为知、言、序、情、境、声、核：各插件职责独立、互不冲突，可按需组合使用，覆盖知识学习、对话调节、身份管理、关系状态、环境感知、语音与更新管理。
 
 | 字 | 模块 | 说明 |
 |----|------|------|
@@ -10,6 +10,7 @@
 | [言](https://github.com/qsbb/astrbot_plugin_conversation_flow) | 对话调节 | 沉默判断、智能分段、插话衔接 |
 | [序](https://github.com/qsbb/astrbot_plugin_identity_guardian) | 身份管理 | 关系感知、权限边界、群组行动（本插件） |
 | [情](https://github.com/qsbb/astrbot_plugin_relationship) | 关系状态 | 情绪、好感、信任、熟悉度状态记录与只读建议 |
+| [境](https://github.com/qsbb/astrbot_plugin_environment_awareness) | 环境感知 | 时间、天气、空气质量、预警与环境关心候选 |
 | [声](https://github.com/qsbb/astrbot_plugin_voice_hub) | 语音合成 | 双 TTS 后端、多音色管理、AI 导演 |
 | [核](https://github.com/qsbb/astrbot_plugin_update_manager) | 更新管理 | 安全检查、计划、串行更新与回滚 |
 
@@ -21,6 +22,14 @@
 - 命令入口：`/idg` 命令组，支持状态、停止/恢复、熔断重置、身份刷新和待确认操作处理。
 - 页面入口：当前实现未提供固定 Plugin Page 管理页；配置在 AstrBot 插件配置中完成。
 - 权限身份始终取当前平台事件的原始 `sender_id` 与 bot/group role；情中配置的跨平台自然人归属只用于关系和记忆连续性，不能继承主人、友好、保护、黑名单或群管理权限。
+
+### 系列诊断日志
+
+- 插件把必要的生命周期事件、警告和错误写入内存环形缓冲，并通过 `series.diagnostics@1.0` 只读契约供“核”的日志页汇总查看。
+- 这条诊断通道与 AstrBot 主日志隔离，不会把诊断记录转发到 AstrBot 日志；普通聊天正文也不会作为诊断日志保存。
+- 写入前会隐藏令牌、账号标识等敏感字段，并截断过长内容。缓冲仅存在于当前进程，重启或热重载后自动清空。
+- 自动捕获的告警只保留模块、函数、行号和异常类型，不保存格式化后的日志正文；清空或热重载会更换流标识，供“核”可靠丢弃旧游标。
+- “核”不是运行依赖：没有安装或没有启用“核”时，序仍照常执行身份判断和安全授权，只是缺少统一日志查看入口。
 
 ## 项目定位
 
@@ -367,7 +376,7 @@ ActionDecision = PolicyEngine.evaluate(
 | 插件名 | `astrbot_plugin_identity_guardian` |
 | 展示名 | 凝心溯溪-序 |
 | 当前版本 | 见 `metadata.yaml`（唯一事实源） |
-| 作者 | Justice-ocr |
+| 作者 | 凌溪 |
 | AstrBot 版本 | `>=4.17,<5` |
 | 支持平台 | `aiocqhttp`（NapCat / Lagrange / LLOneBot 等 OneBot V11 实现） |
 | 许可证 | `MIT` |

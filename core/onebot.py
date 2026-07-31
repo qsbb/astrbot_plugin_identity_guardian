@@ -8,7 +8,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from astrbot.api import logger
+try:
+    from ..series_diagnostics import logger
+except ImportError:  # 兼容旧测试直接把 core 当作顶层包导入
+    from series_diagnostics import logger
 
 # 诊断时只打印这几个关键参数，避免大对象或敏感信息
 _DIAG_KEYS = (

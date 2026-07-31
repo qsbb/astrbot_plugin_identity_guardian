@@ -5,7 +5,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from astrbot.api import logger
+try:
+    from ..series_diagnostics import logger
+except ImportError:  # 兼容旧测试直接把 core 当作顶层包导入
+    from series_diagnostics import logger
 
 from .models import ConfirmEntry
 
