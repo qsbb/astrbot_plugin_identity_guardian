@@ -49,11 +49,11 @@ def test_series_diagnostics_are_bounded_redacted_and_isolated():
 def test_series_diagnostics_cursor_and_capacity():
     diagnostic_clear()
     base = diagnostic_events()["next_seq"]
-    for index in range(305):
+    for index in range(1005):
         diagnostic_event("identity.event", index)
-    payload = diagnostic_events(after_seq=base + 300, limit=20)
+    payload = diagnostic_events(after_seq=base + 1000, limit=20)
     assert [event["seq"] for event in payload["events"]] == list(
-        range(base + 301, base + 306)
+        range(base + 1001, base + 1006)
     )
     assert payload["dropped_before"] == base + 5
     old_stream_id = payload["stream_id"]

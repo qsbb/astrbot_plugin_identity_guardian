@@ -13,13 +13,18 @@ from typing import Any
 PLUGIN_ID = "astrbot_plugin_identity_guardian"
 PLUGIN_NAME = "序"
 DIAGNOSTIC_CONTRACT = "series.diagnostics@1.0"
-_MAX_EVENTS = 300
+_MAX_EVENTS = 1000
 _SENSITIVE_KEY = re.compile(
-    r"(?:token|api[_-]?key|secret|password|authorization|cookie|umo|user[_-]?id|group[_-]?id|platform[_-]?id)",
+    r"(?:token|api[_-]?key|secret|password|authorization|cookie|umo|"
+    r"user[_-]?id|group[_-]?id|platform[_-]?id|"
+    r"^(?:account|person|session|requester|recipient|target|identity|filename|file[_-]?path|path|location|latitude|longitude|prompt|response|reply|query|topic|content|message|claim|snippet|url|new_settings)(?:[_-]?id)?$|"
+    r"^scope(?:[_-]?id)?$)",
     re.IGNORECASE,
 )
 _LONG_NUMBER = re.compile(r"(?<![\w.])[0-9]{6,}(?![\w.])")
 _URL_QUERY = re.compile(r"(https?://[^\s?]+)\?[^\s]+", re.IGNORECASE)
+_URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+_PATH = re.compile(r"(?:[A-Za-z]:\\|/)[^\s]+")
 _EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _OPAQUE_VALUE = re.compile(
     r"(?<![\w])(?=[A-Za-z0-9_-]{20,}(?![\w]))"
@@ -44,6 +49,8 @@ def _safe_text(value: Any, *, limit: int = 320) -> str:
     text = _EMAIL.sub("<已隐藏邮箱>", text)
     text = _OPAQUE_VALUE.sub("<已隐藏随机标识>", text)
     text = _URL_QUERY.sub(r"\1?[已隐藏参数]", text)
+    text = _URL.sub("<已隐藏网址>", text)
+    text = _PATH.sub("<已隐藏路径>", text)
     text = _LONG_NUMBER.sub("<已隐藏标识>", text)
     return text if len(text) <= limit else text[: max(1, limit - 1)] + "…"
 
@@ -70,7 +77,7 @@ def _safe_details(details: Any) -> dict[str, Any]:
 
 class DiagnosticBuffer(logging.Handler):
     def __init__(self) -> None:
-        super().__init__(level=logging.WARNING)
+        super().__init__(level=logging.DEBUG)
         self._events: deque[dict[str, Any]] = deque(maxlen=_MAX_EVENTS)
         self._stream_id = uuid.uuid4().hex
         self._sequence = 0
@@ -116,7 +123,7 @@ class DiagnosticBuffer(logging.Handler):
             pass
 
     def snapshot(self, *, after_seq: int = 0, limit: int = 200) -> dict[str, Any]:
-        after, size = max(0, int(after_seq or 0)), min(500, max(1, int(limit or 200)))
+        after, size = max(0, int(after_seq or 0)), min(1000, max(1, int(limit or 200)))
         with self._lock:
             events = [item for item in self._events if item["seq"] > after][-size:]
             first = self._events[0]["seq"] if self._events else self._sequence + 1
@@ -138,7 +145,7 @@ class DiagnosticBuffer(logging.Handler):
 
 _buffer = DiagnosticBuffer()
 logger = logging.getLogger(PLUGIN_ID)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 
 def isolate_logger() -> None:
