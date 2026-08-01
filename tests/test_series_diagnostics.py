@@ -30,7 +30,8 @@ def test_series_diagnostics_are_bounded_redacted_and_isolated():
     serialized = str(payload["events"])
     assert payload["stream_id"]
     assert diagnostic_events()["stream_id"] == payload["stream_id"]
-    assert "private chat body" not in serialized
+    log_detail = payload["events"][1]["details"]["log_detail"]
+    assert "private chat body" in log_detail
     assert "user-a" not in serialized
     assert "abcdefghijk" not in serialized
     assert logger.propagate is False

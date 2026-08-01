@@ -22,6 +22,9 @@ _SENSITIVE_KEY = re.compile(
     re.IGNORECASE,
 )
 _LONG_NUMBER = re.compile(r"(?<![\w.])[0-9]{6,}(?![\w.])")
+_ACTOR_ID = re.compile(
+    r"(?i)\b(?:user|group|account|person|session)[-_:][A-Za-z0-9_-]+\b"
+)
 _URL_QUERY = re.compile(r"(https?://[^\s?]+)\?[^\s]+", re.IGNORECASE)
 _URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _PATH = re.compile(r"(?:[A-Za-z]:\\|/)[^\s]+")
@@ -33,7 +36,7 @@ _OPAQUE_VALUE = re.compile(
 )
 _SECRET_VALUE = re.compile(
     r"(?i)(token|api[_-]?key|secret|password|authorization|cookie|umo|"
-    r"user[_-]?id|group[_-]?id|platform[_-]?id)\s*[:=]\s*"
+    r"user[_-]?id|group[_-]?id|platform[_-]?id)(?:\s*[:=]\s*|\s+)"
     r"(?:bearer\s+)?([^,\s]+)"
 )
 _PRIVATE_VALUE = re.compile(
@@ -48,6 +51,7 @@ def _safe_text(value: Any, *, limit: int = 320) -> str:
     text = _PRIVATE_VALUE.sub(r"\1=<已隐藏>", text)
     text = _EMAIL.sub("<已隐藏邮箱>", text)
     text = _OPAQUE_VALUE.sub("<已隐藏随机标识>", text)
+    text = _ACTOR_ID.sub("<已隐藏标识>", text)
     text = _URL_QUERY.sub(r"\1?[已隐藏参数]", text)
     text = _URL.sub("<已隐藏网址>", text)
     text = _PATH.sub("<已隐藏路径>", text)
@@ -68,7 +72,7 @@ def _safe_details(details: Any) -> dict[str, Any]:
         elif isinstance(value, (str, bytes)):
             result[name] = _safe_text(
                 value.decode(errors="replace") if isinstance(value, bytes) else value,
-                limit=160,
+                limit=2000 if name.lower() == "log_detail" else 160,
             )
         elif isinstance(value, (list, tuple)):
             result[name] = [_safe_text(item, limit=80) for item in value[:8]]
@@ -111,6 +115,8 @@ class DiagnosticBuffer(logging.Handler):
                 "function": _safe_text(record.funcName or "", limit=60),
                 "line": max(0, int(record.lineno or 0)),
             }
+            if record.getMessage():
+                details["log_detail"] = _safe_text(record.getMessage(), limit=2000)
             if record.exc_info and record.exc_info[0] is not None:
                 details["exception_type"] = record.exc_info[0].__name__
             self.append(
