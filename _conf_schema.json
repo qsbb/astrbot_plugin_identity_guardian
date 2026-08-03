@@ -1,9 +1,10 @@
 {
   "enabled": {
-    "description": "插件总开关",
+    "description": "[基础] 插件总开关",
     "type": "bool",
     "default": true,
-    "obvious_hint": true
+    "obvious_hint": true,
+    "hint": "关闭后插件整体停用：不再注入身份与关系信息，也不提供任何管理工具和审核能力。"
   },
   "owner_users": {
     "description": "[关系] bot 主人 QQ 号列表",
@@ -14,6 +15,16 @@
       "type": "string"
     },
     "hint": "填写 QQ 号（OneBot 平台 ID，非 AstrBot 内部 UID）。用于建立主人关系，不依赖聊天文本自称。例如：[\"123456\", \"789012\"]。每项为纯数字 QQ 号字符串。"
+  },
+  "quest_session_owner_bindings": {
+    "description": "[安全] Quest 私聊主人身份精确绑定",
+    "type": "list",
+    "default": [],
+    "obvious_hint": true,
+    "items": {
+      "type": "string"
+    },
+    "hint": "默认不授权。每项按 api_principal|client_id|platform_id|bot_id|user_id 填写，五段必须精确匹配，且 user_id 还必须在 owner_users 中。例如 astrbot-api|quest-living-room|aiocqhttp|2058141897|1483904397。这里填写稳定主体名称，不要填写 API token 或密码。"
   },
   "friendly_users": {
     "description": "[关系] 额外友好用户 QQ 号列表",
@@ -47,30 +58,34 @@
     "hint": "必须小于普通 max_mute_seconds，建议 30-120 秒。"
   },
   "max_mute_seconds": {
-    "description": "最大禁言时长（秒）",
+    "description": "[处罚] 单次禁言时长硬上限（秒）",
     "type": "int",
     "default": 1800,
-    "hint": "LLM 无法超过此值"
+    "hint": "所有禁言工具都不能超过此秒数，LLM 也无法突破。例如 1800 = 30 分钟。"
   },
   "confirm_mute_threshold": {
-    "description": "需人工确认的禁言时长阈值（秒）",
+    "description": "[处罚] 需人工确认的禁言时长阈值（秒）",
     "type": "int",
-    "default": 3600
+    "default": 3600,
+    "hint": "单次禁言超过此秒数时，先转人工确认再执行。注意：此值大于禁言时长硬上限时，禁言永远不会触发人工确认。"
   },
   "auto_confirm_threshold": {
-    "description": "自动执行的最高处罚档位",
+    "description": "[处罚] 内容审核自动执行的最高处罚档位",
     "type": "string",
     "default": "mute_short",
-    "options": ["warn", "mute_short", "mute_long", "delete", "kick"]
+    "obvious_hint": true,
+    "options": ["warn", "mute_short", "mute_long", "delete", "kick"],
+    "hint": "审核判定违规后，不超过此档的处罚直接自动执行，超过的降级为警告。档位由轻到重：warn < mute_short < mute_long < delete < kick。风险：设为 delete 或 kick 后，命中审核即可自动撤消息甚至踢人，请谨慎选择。"
   },
   "blacklist_users": {
-    "description": "永久黑名单 QQ 号列表（触发即踢）",
+    "description": "[安全] 永久黑名单 QQ 号列表（触发即踢）",
     "type": "list",
     "default": [],
+    "obvious_hint": true,
     "items": {
       "type": "string"
     },
-    "hint": "填写 QQ 号（纯数字字符串）。黑名单用户发送消息即触发踢出，不经过 LLM。"
+    "hint": "填写 QQ 号（纯数字字符串）。黑名单用户发送消息即触发踢出，不经过 LLM。风险：填错 QQ 号会直接误踢群友，保存前请逐位核对。"
   },
   "auto_moderate": {
     "description": "[审核] 启用独立 LLM 内容审核（第二层）",
@@ -102,14 +117,15 @@
     "hint": "在管理 API 真正执行前校验白名单、频率、批量、熔断。命中即阻断。强烈建议始终开启。"
   },
   "join_audit_mode": {
-    "description": "入群审核模式",
+    "description": "[入群] 入群审核模式",
     "type": "string",
     "default": "off",
+    "obvious_hint": true,
     "options": ["off", "approve_only", "notify_only"],
-    "hint": "approve_only 仅高置信度正确时自动通过；notify_only 仅通知不自动通过；off 完全不处理。"
+    "hint": "approve_only 仅答案高置信度正确时自动放行，答错或不确定一律保持待审，不会自动拒绝；notify_only 只通知管理员，不自动处理；off 完全不处理。"
   },
   "join_questions": {
-    "description": "入群问答配置（每项一行）",
+    "description": "[入群] 入群问答配置（每项一行）",
     "type": "list",
     "default": [],
     "items": {
@@ -118,10 +134,10 @@
     "hint": "每项格式：问题|答案1,答案2。例如：\"1+1=?|2,二\" 或 \"本群做什么的|技术交流,编程讨论\"。不含 | 时整体视为答案（匹配任意问题）。留空则仅依赖 LLM 语义判断。"
   },
   "join_approve_threshold": {
-    "description": "入群申请自动通过的最低置信度",
+    "description": "[入群] 入群申请自动通过的最低置信度",
     "type": "float",
     "default": 0.9,
-    "hint": "仅 verdict=correct 且达到此阈值才自动通过。"
+    "hint": "取值 0-1。仅判定为答案正确且置信度达到此值才自动放行。调低会更激进地放行陌生人，建议不低于 0.85。"
   },
   "enable_active_learner_recall": {
     "description": "[联动] 入群审核查询 active_learner 知识库",
@@ -133,22 +149,24 @@
     "description": "[联动] 知识检索范围",
     "type": "string",
     "default": "group",
-    "options": ["group", "global"]
+    "options": ["group", "global"],
+    "hint": "group 只检索当前群的知识；global 检索全局共享知识，可能把其他群的内容用于本群审核判断。"
   },
   "manual_threshold": {
-    "description": "内容审核置信度低于此值时不自动处罚",
+    "description": "[审核] 审核置信度低于此值时不自动处罚",
     "type": "float",
-    "default": 0.6
+    "default": 0.6,
+    "hint": "取值 0-1。审核 LLM 置信度低于此值视为不确定，不自动处罚。调高更保守（更少自动处罚），调低更激进。"
   },
   "audit_llm_provider": {
-    "description": "审核用 LLM Provider（留空则回退主对话 LLM）",
+    "description": "[审核] 审核用 LLM Provider（留空则回退主对话 LLM）",
     "type": "string",
     "_special": "select_provider",
     "default": "",
     "hint": "用于内容审核与入群问答裁决，可填便宜模型降低成本"
   },
   "audit_notify_targets": {
-    "description": "审核人工通知目标列表（会话 ID）",
+    "description": "[通知] 审核人工通知目标列表（会话 ID）",
     "type": "list",
     "default": [],
     "items": {
@@ -157,7 +175,7 @@
     "hint": "填写 AstrBot 会话 ID（unified_msg_origin 格式）。支持多个目标。例如：[\"aiocqhttp:GroupMessage:123456\", \"aiocqhttp:PrivateMessage:888888\"]。入群申请未自动处理时会通知这些会话。"
   },
   "confirm_notify_targets": {
-    "description": "二次确认通知目标列表（会话 ID）",
+    "description": "[通知] 二次确认通知目标列表（会话 ID）",
     "type": "list",
     "default": [],
     "items": {
@@ -176,42 +194,48 @@
     "hint": "只填写已确认属于 bot 主人的完整私聊 unified_msg_origin，例如 aiocqhttp:FriendMessage:888888。必须精确匹配；群聊、频道、未列出的会话和情中的跨平台别名均不会获得主动发送权限。"
   },
   "pending_ttl_hours": {
-    "description": "待审请求保留时长（小时）",
+    "description": "[入群] 待审请求保留时长（小时）",
     "type": "int",
-    "default": 24
+    "default": 24,
+    "hint": "超过此时长仍未处理的入群待审请求会被自动清理。最小 1 小时。"
   },
   "cross_group_violation": {
-    "description": "违规历史是否跨群共享",
-    "type": "bool",
-    "default": false,
-    "hint": "开启后用户在 A 群违规记录在 B 群也可见"
-  },
-  "enable_set_admin_revoke": {
-    "description": "是否允许撤销管理员操作",
+    "description": "[安全] 违规历史是否跨群共享",
     "type": "bool",
     "default": false,
     "obvious_hint": true,
-    "hint": "set_group_admin 默认只允许任命(enable=true)，开启后才允许撤销"
+    "hint": "开启后用户在 A 群的违规记录在 B 群也可见并影响判断。涉及跨群隐私，请确认各群管理知情后再开启。"
+  },
+  "enable_set_admin_revoke": {
+    "description": "[安全] 允许撤销管理员（默认只允许任命）",
+    "type": "bool",
+    "default": false,
+    "obvious_hint": true,
+    "hint": "set_group_admin 默认只允许任命(enable=true)，开启后才允许撤销。风险：开启后 LLM 可收回群管理员权限，属于高敏感操作，不需要时请保持关闭。"
   },
   "welcome_bot_speak": {
-    "description": "bot 进群是否主动发言",
+    "description": "[欢迎] bot 进群是否主动发言",
     "type": "bool",
-    "default": false
+    "default": false,
+    "hint": "开启后 bot 被拉进新群时按下方模板主动发一条消息；关闭则保持沉默。"
   },
   "welcome_template": {
-    "description": "bot 进群发言模板",
+    "description": "[欢迎] bot 进群发言模板",
     "type": "string",
-    "default": ""
+    "default": "",
+    "hint": "支持占位符 {group_name}（群名）和 {group_id}（群号）。留空则不主动发言。"
   },
   "identity_refresh_interval": {
-    "description": "身份刷新间隔（秒）",
+    "description": "[高级] 身份刷新间隔（秒）",
     "type": "int",
-    "default": 1800
+    "default": 1800,
+    "hint": "bot 在群内身份缓存的刷新间隔，最小 60 秒。调低会更频繁调用平台接口，一般无需修改。"
   },
   "action_cooldown_seconds": {
-    "description": "同一用户同一操作冷却（秒）",
+    "description": "[高级] 同一用户同一操作冷却（秒）",
     "type": "int",
-    "default": 60
+    "default": 60,
+    "hint": "同一用户对同一目标重复执行管理操作的最小间隔，防止连续误操作。一般无需修改。"
   },
   "circuit_breaker_threshold": {
     "description": "[安全] 全局熔断阈值（1小时内管理操作总数）",
@@ -221,9 +245,10 @@
     "hint": "1小时内管理操作总数超过此值时自动停用所有高风险工具。需 /idg reset_breaker 手动恢复。"
   },
   "log_level": {
-    "description": "日志级别",
+    "description": "[高级] 日志级别",
     "type": "string",
     "default": "INFO",
-    "options": ["DEBUG", "INFO", "WARNING", "ERROR"]
+    "options": ["DEBUG", "INFO", "WARNING", "ERROR"],
+    "hint": "日常使用 INFO；排查问题时临时改为 DEBUG，用完改回，避免日志量过大。"
   }
 }

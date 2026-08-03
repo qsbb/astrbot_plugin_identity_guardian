@@ -4,7 +4,7 @@ short_desc: 凝心溯溪系列身份模块：关系感知、权限边界与群�
 desc: >
   凝心溯溪系列身份模块。动态识别 bot、发送者与目标身份及关系，向 LLM 注入受控行动边界，
   并提供自助动作、互动反应、群信息管理和仅自动通过的入群审核能力。
-version: 0.3.0
+version: 0.3.1
 author: 凌溪
 astrbot_version: ">=4.17,<5"
 support_platforms:

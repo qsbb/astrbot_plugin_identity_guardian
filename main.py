@@ -34,6 +34,12 @@ from .core.models import ActionDecision, ActorContext, TriggerSource
 from .core.onebot import OneBotClient
 from .core.policy import PolicyEngine
 from .core.prompts import SECURITY_RULES, build_identity_prompt
+from .core.quest_session import (
+    QUEST_SESSION_AUTH_CONTRACT_NAME,
+    QUEST_SESSION_AUTH_CONTRACT_VERSION,
+    authorize as authorize_quest_session_request,
+    decision as quest_session_decision,
+)
 from .core.relationship import RelationshipService
 from .core.request_context import (
     OWNER_IDENTITY_GUARDIAN,
@@ -234,6 +240,105 @@ class IdentityGuardianPlugin(Star):
             "consent_lifetime": "current_event_only",
             "grants_platform_action": False,
         }
+
+    def quest_session_authorization_contract(self) -> dict[str, object]:
+        """Declare exact raw-identity authorization for a private Quest session."""
+        return {
+            "name": QUEST_SESSION_AUTH_CONTRACT_NAME,
+            "version": QUEST_SESSION_AUTH_CONTRACT_VERSION,
+            "plugin": PLUGIN_NAME,
+            "capabilities": ("authorize_read_only_session",),
+            "method": "authorize_quest_session",
+            "timeout_ms": 1000,
+            "permission_identity_mode": "raw_platform_identity_tuple",
+            "permission_identity_fields": ("platform_id", "bot_id", "user_id"),
+            "group_id_role": "session_context_only",
+            "cross_platform_inheritance": False,
+            "grants_platform_action": False,
+            "request_schema": {
+                "type": "object",
+                "required": (
+                    "api_principal",
+                    "client_id",
+                    "platform_id",
+                    "bot_id",
+                    "user_id",
+                    "group_id",
+                ),
+                "additionalProperties": False,
+                "properties": {
+                    "api_principal": {"type": "string", "min_length": 1},
+                    "client_id": {"type": "string", "min_length": 1},
+                    "platform_id": {"type": "string", "min_length": 1},
+                    "bot_id": {"type": "string", "min_length": 1},
+                    "user_id": {"type": "string", "min_length": 1},
+                    "group_id": {"type": ("string", "null")},
+                },
+                "identity_value_normalization": "strip_outer_whitespace",
+                "identity_value_forbidden_characters": ("|",),
+                "private_group_values": (None, ""),
+            },
+            "response_schema": {
+                "type": "object",
+                "required": (
+                    "contract_version",
+                    "status",
+                    "authorized",
+                    "reason",
+                    "access",
+                    "owner_confirmed",
+                    "grants_platform_action",
+                ),
+                "additionalProperties": False,
+                "properties": {
+                    "contract_version": {"const": QUEST_SESSION_AUTH_CONTRACT_VERSION},
+                    "status": {
+                        "enum": ("authorized", "denied", "unavailable", "error")
+                    },
+                    "authorized": {"type": "boolean"},
+                    "reason": {"type": "string"},
+                    "access": {"enum": ("read_only_context", "none")},
+                    "owner_confirmed": {"type": "boolean"},
+                    "grants_platform_action": {"const": False},
+                },
+                "reason_values": (
+                    "authorized_private_owner_identity",
+                    "plugin_disabled",
+                    "guard_stopped",
+                    "invalid_request",
+                    "unexpected_fields",
+                    "missing_api_principal",
+                    "missing_client_id",
+                    "missing_platform_id",
+                    "missing_bot_id",
+                    "missing_user_id",
+                    "missing_group_id",
+                    "invalid_api_principal",
+                    "invalid_client_id",
+                    "invalid_platform_id",
+                    "invalid_bot_id",
+                    "invalid_user_id",
+                    "invalid_group_id",
+                    "private_session_required",
+                    "owner_not_configured",
+                    "quest_identity_not_allowlisted",
+                    "authorization_error",
+                ),
+            },
+            "fallback": "deny_protected_context_allow_isolated_base_chat",
+        }
+
+    def authorize_quest_session(self, request: object) -> dict[str, object]:
+        """Authorize read-only context reuse without returning or remapping identity."""
+        try:
+            if not self.config.enabled:
+                return quest_session_decision("unavailable", "plugin_disabled")
+            if bool(self.__dict__.get("_stopped", False)):
+                return quest_session_decision("unavailable", "guard_stopped")
+            return authorize_quest_session_request(self.config, request)
+        except Exception as exc:
+            logger.debug("%s Quest session authorization failed: %s", LOG_PREFIX, exc)
+            return quest_session_decision("error", "authorization_error")
 
     def authorize_context_bridge(
         self, event: AstrMessageEvent, source_scope: str, target_scope: str

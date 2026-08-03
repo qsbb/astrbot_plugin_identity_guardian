@@ -37,6 +37,7 @@ def _coerce_config(config: Any) -> dict[str, Any]:
 _DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "owner_users": [],
+    "quest_session_owner_bindings": [],
     "friendly_users": [],
     "protected_users": [],
     "allow_playful_mute_protected": False,
@@ -117,6 +118,7 @@ class Config:
         # 对 list 类型做正确解析
         for key in (
             "owner_users",
+            "quest_session_owner_bindings",
             "friendly_users",
             "protected_users",
             "blacklist_users",
@@ -138,6 +140,14 @@ class Config:
     @property
     def owner_users(self) -> list[str]:
         return [str(x) for x in self._raw.get("owner_users", [])]
+
+    @property
+    def quest_session_owner_bindings(self) -> list[str]:
+        return [
+            str(x).strip()
+            for x in self._raw.get("quest_session_owner_bindings", [])
+            if str(x).strip()
+        ]
 
     @property
     def friendly_users(self) -> list[str]:

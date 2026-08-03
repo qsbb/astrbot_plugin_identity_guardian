@@ -96,6 +96,28 @@
 
 私聊进入群聊的同意只对当前这一条群消息有效，不保存也不继承。出现“不要、不同意、取消”、假设、举例、询问规则或含糊表达时一律拒绝；引用消息里的授权文字不算当前用户本轮同意。这个契约属于上下文隐私边界，不改变主人、友好、保护、黑名单或群管理权限，跨平台自然人身份也不能据此提权。
 
+### Quest 私聊只读授权契约
+
+序提供 `identity.quest_session_authorization@1.0`，供 Quest Avatar Bridge 判断一个 HTTP 会话能否复用主人范围的只读上下文。调用 `authorize_quest_session(request)`，建议消费者使用契约声明的 `1000ms` 超时。请求必须是普通对象，且只包含下列字段：
+
+```json
+{
+  "api_principal": "astrbot-api",
+  "client_id": "quest-living-room",
+  "platform_id": "aiocqhttp",
+  "bot_id": "2058141897",
+  "user_id": "1483904397",
+  "group_id": null
+}
+```
+
+- `api_principal` 是 AstrBot API 已认证的稳定主体名称，不是 token 或密码；`client_id` 是稳定的 Quest 客户端标识。
+- 权限身份三元组固定为原始 `platform_id + bot_id + user_id`；`group_id` 只表示会话上下文，必须显式传入，私聊使用 `null` 或空字符串，任何非空群号均拒绝。
+- 只有 `user_id` 已在 `owner_users` 中，且前五个字段按 `api_principal|client_id|platform_id|bot_id|user_id` 完整写入 `quest_session_owner_bindings` 时才授权。任何一段近似匹配、跨平台或跨 bot 都不会继承。
+- 情中的自然人绑定、好感、关系档位和其他平台账号均不参与权限判断；结果不返回身份数据，也不授予发送、群管、主动消息或任何平台动作。
+
+响应固定包含 `contract_version`、`status`、`authorized`、`reason`、`access`、`owner_confirmed` 和 `grants_platform_action`。`status=authorized` 时仅表示 `access=read_only_context`；业务拒绝返回 `denied`，插件关闭或紧急停止返回 `unavailable`，提供方内部异常返回 `error`。消费者遇到契约缺失、major 版本不兼容、超时、异常、非对象响应、字段缺失或任何非 `authorized` 状态都必须失败关闭：不要读取受保护上下文，但可以继续完全隔离的基础 Quest 对话。
+
 ## 安装
 
 1. 将本仓库放入 AstrBot 插件目录。
@@ -124,6 +146,7 @@ pip install -r requirements.txt
 | --- | --- | --- | --- |
 | `enabled` | bool | `true` | 插件总开关 |
 | `owner_users` | list<string> | `[]` | bot 主人 QQ 号列表（纯数字字符串），用于建立主人关系，不依赖聊天文本自称。例如 `["123456", "789012"]` |
+| `quest_session_owner_bindings` | list<string> | `[]` | Quest 私聊只读上下文的精确绑定，格式为 `api_principal|client_id|platform_id|bot_id|user_id`；还需 `user_id` 已列入 `owner_users`，默认不授权 |
 | `friendly_users` | list<string> | `[]` | 额外友好用户 QQ 号列表（纯数字字符串）。群主和管理员可按平台身份自动识别，无需重复填写 |
 | `protected_users` | list<string> | `[]` | 强保护用户 QQ 号列表（纯数字字符串），禁止被踢出、长时禁言及批量处罚 |
 | `log_level` | string | `INFO` | 日志级别：DEBUG / INFO / WARNING / ERROR |
@@ -136,10 +159,10 @@ pip install -r requirements.txt
 | --- | --- | --- | --- |
 | `allow_playful_mute_protected` | bool | `false` | 允许对主人 / 强保护用户进行玩笑式短禁言 |
 | `playful_mute_max_seconds` | int | `60` | 玩笑式禁言最大时长（秒），必须小于 `max_mute_seconds` |
-| `max_mute_seconds` | int | `1800` | LLM 无法超过此值 |
-| `confirm_mute_threshold` | int | `3600` | 需人工确认的禁言时长阈值（秒） |
-| `auto_confirm_threshold` | string | `mute_short` | 自动执行的最高处罚档位：warn / mute_short / mute_long / delete / kick |
-| `blacklist_users` | list<string> | `[]` | 永久黑名单 QQ 号列表（纯数字字符串），触发即踢 |
+| `max_mute_seconds` | int | `1800` | 单次禁言时长硬上限（秒），所有禁言工具与 LLM 都无法超过 |
+| `confirm_mute_threshold` | int | `3600` | 超过此秒数的禁言需人工确认才执行；若大于 `max_mute_seconds`，禁言永远不会触发人工确认 |
+| `auto_confirm_threshold` | string | `mute_short` | 内容审核自动执行的最高处罚档位：warn / mute_short / mute_long / delete / kick，超过的降级为警告。设为 delete / kick 后命中审核即可自动撤消息甚至踢人，风险高 |
+| `blacklist_users` | list<string> | `[]` | 永久黑名单 QQ 号列表（纯数字字符串），触发即踢；填错会直接误踢群友，保存前请逐位核对 |
 | `action_cooldown_seconds` | int | `60` | 同一用户同一操作冷却（秒） |
 | `circuit_breaker_threshold` | int | `10` | 全局熔断阈值（1 小时内管理操作总数） |
 
@@ -150,8 +173,8 @@ pip install -r requirements.txt
 | `auto_moderate` | bool | `false` | 启用独立 LLM 内容审核（第二层）。若已安装其他防注入 / 内容过滤插件，可关闭此项避免重复审核 |
 | `moderation_rules` | list<string> | `[]` | 违规关键词正则列表（第一层预筛），命中即固定处罚不经 LLM。例如 `["加我微信.*", "免费领.*"]` |
 | `spam_threshold` | int | `5` | 刷屏阈值（条 / 10 秒，0 = 关闭） |
-| `manual_threshold` | float | `0.6` | 内容审核置信度低于此值时不自动处罚 |
-| `cross_group_violation` | bool | `false` | 违规历史是否跨群共享 |
+| `manual_threshold` | float | `0.6` | 审核置信度低于此值时不自动处罚，取值 0-1，调高更保守 |
+| `cross_group_violation` | bool | `false` | 违规历史是否跨群共享；涉及跨群隐私，请确认各群管理知情后再开启 |
 
 ### 安全护栏
 
@@ -167,7 +190,7 @@ pip install -r requirements.txt
 | --- | --- | --- | --- |
 | `join_audit_mode` | string | `off` | 入群审核模式：off / approve_only / notify_only |
 | `join_questions` | list<string> | `[]` | 入群问答配置，每项一行，格式 `问题\|答案1,答案2`。例如 `["1+1=?\|2,二", "本群做什么的\|技术交流,编程讨论"]`。不含 `\|` 时整体视为答案。留空则仅依赖 LLM 语义判断 |
-| `join_approve_threshold` | float | `0.9` | 自动通过的最低置信度 |
+| `join_approve_threshold` | float | `0.9` | 自动通过的最低置信度，取值 0-1；调低会更激进地放行陌生人，建议不低于 0.85 |
 | `audit_notify_targets` | list<string> | `[]` | 审核人工通知目标列表（AstrBot 会话 ID，unified_msg_origin 格式）。例如 `["aiocqhttp:GroupMessage:123456"]` |
 | `pending_ttl_hours` | int | `24` | 待审请求保留时长（小时） |
 
@@ -187,7 +210,7 @@ pip install -r requirements.txt
 | 配置项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `enable_active_learner_recall` | bool | `false` | 入群审核查询 active_learner 知识库 |
-| `active_learner_scope` | string | `group` | 知识检索范围：group / global |
+| `active_learner_scope` | string | `group` | 知识检索范围：group 只检索当前群 / global 检索全局共享知识（可能把其他群内容用于本群判断） |
 
 ### LLM 与欢迎
 
@@ -196,7 +219,7 @@ pip install -r requirements.txt
 | `audit_llm_provider` | string | `""` | 审核用 LLM Provider（留空则回退主对话 LLM），可填便宜模型降低成本 |
 | `confirm_notify_targets` | list<string> | `[]` | 二次确认通知目标列表（AstrBot 会话 ID，unified_msg_origin 格式） |
 | `welcome_bot_speak` | bool | `false` | bot 进群是否主动发言 |
-| `welcome_template` | string | `""` | bot 进群发言模板 |
+| `welcome_template` | string | `""` | bot 进群发言模板，支持 `{group_name}` / `{group_id}` 占位符；留空则不主动发言 |
 | `identity_refresh_interval` | int | `1800` | 身份刷新间隔（秒） |
 
 ## LLM 工具

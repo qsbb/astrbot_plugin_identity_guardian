@@ -14,6 +14,7 @@ def test_defaults():
     cfg = Config({})
     assert cfg.enabled is True
     assert cfg.owner_users == []
+    assert cfg.quest_session_owner_bindings == []
     assert cfg.protected_users == []
     assert cfg.max_mute_seconds == 1800
     assert cfg.join_audit_mode == "off"
@@ -27,12 +28,21 @@ def test_list_parsing():
     cfg = Config(
         {
             "owner_users": ["111", "222"],
+            "quest_session_owner_bindings": [
+                "api|quest|aiocqhttp|bot|111",
+                "  api|quest|aiocqhttp|bot|222  ",
+                "",
+            ],
             "protected_users": ["333"],
             "moderation_rules": ["spam.*", "ad.*"],
             "proactive_delivery_targets": ["aiocqhttp:FriendMessage:111"],
         }
     )
     assert cfg.owner_users == ["111", "222"]
+    assert cfg.quest_session_owner_bindings == [
+        "api|quest|aiocqhttp|bot|111",
+        "api|quest|aiocqhttp|bot|222",
+    ]
     assert cfg.protected_users == ["333"]
     assert cfg.moderation_rules == ["spam.*", "ad.*"]
     assert cfg.proactive_delivery_targets == ["aiocqhttp:FriendMessage:111"]
