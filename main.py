@@ -207,8 +207,10 @@ class IdentityGuardianPlugin(Star):
         return {
             "name": "series.diagnostics",
             "version": "1.0",
-            "plugin": PLUGIN_NAME,
-            "capabilities": ("read", "clear"),
+            "series_id": "ningxin_suxi",
+            "plugin_id": PLUGIN_NAME,
+            "plugin_name": "序",
+            "capabilities": ("read", "clear", "read_events", "clear_events"),
             "storage": "memory_only",
             "astrbot_log_propagation": False,
         }
