@@ -129,6 +129,12 @@
 - 提供方存在但关闭、停止、拒绝或报错时，消费者不得再把本地白名单与它合并放行。只有完全未安装序时，消费者才可启用自身独立配置回退。
 - 自然人绑定继续由情负责连续关系；自然人 ID、显示名和关系状态永远不能替代原始平台身份或授予权限。
 
+序另提供 `identity.quest_binding_control@1.0`，用于自然人映射后的 Quest 只读会话身份：
+
+- `upsert_quest_binding()` 把 principal 摘要与 client/platform/bot/user 的精确组合再次收敛为 `qrb1` 不可逆整组摘要后写入 `quest_session_read_only_bindings`，配置中不保留可读账号，且绝不修改 `owner_users`。
+- 命中该绑定只允许 Quest 使用这组原始身份进入只读上下文，返回 `owner_confirmed=false`、`grants_platform_action=false`；群管理、处罚、主动投递与管理员工具仍按原权限规则判断。
+- “情”只提供账号归属事实，“临”仍须提交已认证 principal；自然人 ID、显示名或关系状态不能直接创建绑定。
+
 这里的“统一”只统一身份事实和授权裁决，不把所有名为“白名单”的业务开关混为一种权限。言的内容拦截例外、声的自动语音范围、知的知识领域范围和情的高好感门槛仍是各自业务策略；后续可通过控制面按命名空间读取身份角色，但必须保留插件本地配置作为未安装序时的回退，且集中结果与本地结果不得合并扩大权限。
 
 ## 安装
@@ -160,6 +166,7 @@ pip install -r requirements.txt
 | `enabled` | bool | `true` | 插件总开关 |
 | `owner_users` | list<string> | `[]` | bot 主人 QQ 号列表（纯数字字符串），用于建立主人关系，不依赖聊天文本自称。例如 `["123456", "789012"]` |
 | `quest_session_owner_bindings` | list<string> | `[]` | Quest 私聊只读上下文的精确绑定，格式为 `api_principal|client_id|platform_id|bot_id|user_id`；还需 `user_id` 已列入 `owner_users`，默认不授权 |
+| `quest_session_read_only_bindings` | list<string> | `[]` | Quest 非主人只读上下文的 `qrb1` 不可逆整组摘要，由临通过正式契约管理；不包含可读账号、不修改 `owner_users`、不授予平台操作权限 |
 | `friendly_users` | list<string> | `[]` | 额外友好用户 QQ 号列表（纯数字字符串）。群主和管理员可按平台身份自动识别，无需重复填写 |
 | `protected_users` | list<string> | `[]` | 强保护用户 QQ 号列表（纯数字字符串），禁止被踢出、长时禁言及批量处罚 |
 | `log_level` | string | `INFO` | 日志级别：DEBUG / INFO / WARNING / ERROR |

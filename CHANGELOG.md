@@ -6,6 +6,22 @@
 
 ## [Unreleased]
 
+## 0.3.4 - 2026-08-09
+
+### 新增
+
+- 新增 `identity.quest_binding_control@1.0`，供“临”等受信任后端为已认证 Quest principal 保存精确的私聊只读身份绑定；请求只接受 principal 摘要、client、platform、bot、user 五项，响应只返回状态与计数。
+- 新增独立配置 `quest_session_read_only_bindings`，只保存 `qrb1` 不可逆整组摘要，与主人绑定完全分离；同客户端旧 Quest owner 绑定会迁移移除，但不会删除或新增 `owner_users`。
+
+### 安全
+
+- Quest 只读绑定不会写入或修改 `owner_users`，不会授予主人、管理、群操作或其他平台权限。会话授权命中该绑定时明确返回 `owner_confirmed=false`、`grants_platform_action=false`；新列表拒绝旧明文 principal 格式，并支持按 principal/client 正式撤销。原有 `upsert_quest_owner_binding()` 行为保持不变，只用于管理员明确配置主人身份。
+- 新接口存在但不兼容、关闭、保存失败或并发修订被覆盖时失败关闭，消费者不得与本地配置合并放行。
+
+### 测试
+
+- 新增契约边界、非主人只读授权、主人列表不变、同客户端重绑、保存失败不改变运行态、非法字段拒绝和旧主人绑定兼容回归。
+
 ## 0.3.3 - 2026-08-09
 
 ### 新增

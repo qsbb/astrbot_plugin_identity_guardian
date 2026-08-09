@@ -38,6 +38,7 @@ _DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "owner_users": [],
     "quest_session_owner_bindings": [],
+    "quest_session_read_only_bindings": [],
     "friendly_users": [],
     "protected_users": [],
     "allow_playful_mute_protected": False,
@@ -119,6 +120,7 @@ class Config:
         for key in (
             "owner_users",
             "quest_session_owner_bindings",
+            "quest_session_read_only_bindings",
             "friendly_users",
             "protected_users",
             "blacklist_users",
@@ -146,6 +148,14 @@ class Config:
         return [
             str(x).strip()
             for x in self._raw.get("quest_session_owner_bindings", [])
+            if str(x).strip()
+        ]
+
+    @property
+    def quest_session_read_only_bindings(self) -> list[str]:
+        return [
+            str(x).strip()
+            for x in self._raw.get("quest_session_read_only_bindings", [])
             if str(x).strip()
         ]
 

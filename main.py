@@ -45,6 +45,11 @@ from .core.quest_session import (
     authorize as authorize_quest_session_request,
     decision as quest_session_decision,
 )
+from .core.quest_binding_control import (
+    QuestBindingControl,
+    contract as quest_binding_control_contract,
+    result as quest_binding_control_result,
+)
 from .core.relationship import RelationshipService
 from .core.request_context import (
     OWNER_IDENTITY_GUARDIAN,
@@ -135,6 +140,13 @@ class IdentityGuardianPlugin(Star):
         self.config = Config(config)
         self.config.apply_log_level()
         self._identity_control_plane = IdentityControlPlane(
+            config=self.config,
+            native_config=config,
+            logger=self.logger,
+            stopped=lambda: bool(getattr(self, "_stopped", False)),
+            diagnostic=diagnostic_event,
+        )
+        self._quest_binding_control = QuestBindingControl(
             config=self.config,
             native_config=config,
             logger=self.logger,
@@ -262,6 +274,47 @@ class IdentityGuardianPlugin(Star):
             )
         return await self._identity_control_plane_service().upsert(request)
 
+    def quest_binding_control_contract(self) -> dict[str, object]:
+        """Declare Quest-only binding persistence without owner mutation."""
+        return quest_binding_control_contract()
+
+    async def upsert_quest_binding(self, request: object) -> dict[str, object]:
+        """Persist one exact read-only Quest binding without adding an owner."""
+        config = getattr(self, "config", None)
+        if not isinstance(config, Config):
+            return quest_binding_control_result(
+                None,
+                status="error",
+                reason="configuration_unavailable",
+                config_writable=False,
+            )
+        return await self._quest_binding_control_service().upsert(request)
+
+    async def revoke_quest_binding(self, request: object) -> dict[str, object]:
+        """Revoke one principal/client Quest-only binding without changing owners."""
+        config = getattr(self, "config", None)
+        if not isinstance(config, Config):
+            return quest_binding_control_result(
+                None,
+                status="error",
+                reason="configuration_unavailable",
+                config_writable=False,
+            )
+        return await self._quest_binding_control_service().revoke(request)
+
+    def _quest_binding_control_service(self) -> QuestBindingControl:
+        service = getattr(self, "_quest_binding_control", None)
+        if not isinstance(service, QuestBindingControl):
+            service = QuestBindingControl(
+                config=self.config,
+                native_config=getattr(self, "_native_config", None),
+                logger=getattr(self, "logger", logger),
+                stopped=lambda: bool(getattr(self, "_stopped", False)),
+                diagnostic=diagnostic_event,
+            )
+            self._quest_binding_control = service
+        return service
+
     def _identity_control_plane_service(self) -> IdentityControlPlane:
         service = getattr(self, "_identity_control_plane", None)
         if not isinstance(service, IdentityControlPlane):
@@ -360,6 +413,7 @@ class IdentityGuardianPlugin(Star):
                 },
                 "reason_values": (
                     "authorized_private_owner_identity",
+                    "authorized_private_quest_identity",
                     "plugin_disabled",
                     "guard_stopped",
                     "invalid_request",

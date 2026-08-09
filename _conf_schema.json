@@ -26,6 +26,15 @@
     },
     "hint": "默认不授权。安装临后请在临的管理页填写结构化字段，由序原子同步主人和精确绑定。此列表只保留旧配置兼容，不建议手工新增；新绑定会把已认证 API 主体保存为不可逆摘要，绝不填写 token、密码、自然人 ID 或显示名。"
   },
+  "quest_session_read_only_bindings": {
+    "description": "[内部] Quest 私聊只读身份绑定摘要（由临管理）",
+    "type": "list",
+    "default": [],
+    "items": {
+      "type": "string"
+    },
+    "hint": "只保存 qrb1 不可逆整组摘要，不包含可读 Platform/Bot/User/principal。由临的自然人绑定流程自动维护，不建议手工编辑。"
+  },
   "friendly_users": {
     "description": "[关系] 额外友好用户 QQ 号列表",
     "type": "list",

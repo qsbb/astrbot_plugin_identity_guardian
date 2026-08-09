@@ -4,6 +4,8 @@ from copy import deepcopy
 
 import pytest
 
+from core.identity_control_plane import principal_digest
+from core.quest_binding_control import read_only_binding_record
 from tests.test_main_handlers import main, plugin_instance
 
 
@@ -62,6 +64,9 @@ def test_contract_is_exact_read_only_and_versioned():
     assert contract["response_schema"]["properties"]["grants_platform_action"] == {
         "const": False
     }
+    assert "authorized_private_quest_identity" in contract["response_schema"][
+        "reason_values"
+    ]
 
 
 def test_exact_private_owner_binding_is_authorized_without_side_effects():
@@ -93,7 +98,7 @@ def test_exact_private_owner_binding_is_authorized_without_side_effects():
         ({"client_id": "other-client"}, "quest_identity_not_allowlisted"),
         ({"platform_id": "telegram"}, "quest_identity_not_allowlisted"),
         ({"bot_id": "bot-2"}, "quest_identity_not_allowlisted"),
-        ({"user_id": "person-owner"}, "owner_not_configured"),
+        ({"user_id": "person-owner"}, "quest_identity_not_allowlisted"),
         ({"group_id": 123}, "invalid_group_id"),
         ({"group_id": "   "}, "private_session_required"),
         ({"user_id": "owner|1"}, "invalid_user_id"),
@@ -146,6 +151,35 @@ def test_non_owner_is_denied_even_when_exact_binding_exists():
 
     assert result["reason"] == "owner_not_configured"
     assert result["authorized"] is False
+
+
+def test_non_owner_exact_read_only_binding_is_authorized_without_owner_role():
+    plugin = plugin_instance()
+    plugin.config = main.Config(
+        {
+            "owner_users": [],
+            "quest_session_read_only_bindings": [
+                read_only_binding_record(
+                    {
+                        "api_principal_digest": principal_digest("astrbot-api"),
+                        "client_id": "quest-living-room",
+                        "platform_id": "aiocqhttp",
+                        "bot_id": "bot-1",
+                        "user_id": "owner-1",
+                    }
+                )
+            ],
+        }
+    )
+    plugin._stopped = False
+
+    result = plugin.authorize_quest_session(_request())
+
+    assert result["authorized"] is True
+    assert result["reason"] == "authorized_private_quest_identity"
+    assert result["owner_confirmed"] is False
+    assert result["grants_platform_action"] is False
+    assert plugin.config.owner_users == []
 
 
 def test_invalid_request_and_extra_fields_are_denied():

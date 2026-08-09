@@ -10,6 +10,7 @@ from typing import Any
 
 from .config import Config
 from .identity_control_plane import principal_digest
+from .quest_binding_control import read_only_binding_record
 
 QUEST_SESSION_AUTH_CONTRACT_NAME = "identity.quest_session_authorization"
 QUEST_SESSION_AUTH_CONTRACT_VERSION = "1.0"
@@ -26,7 +27,12 @@ _IDENTITY_FIELDS = _REQUIRED_FIELDS[:-1]
 _BINDING_SEPARATOR = "|"
 
 
-def decision(status: str, reason: str) -> dict[str, object]:
+def decision(
+    status: str,
+    reason: str,
+    *,
+    owner_confirmed: bool = False,
+) -> dict[str, object]:
     """Build the stable, identifier-free authorization response."""
     authorized = status == "authorized"
     return {
@@ -35,7 +41,7 @@ def decision(status: str, reason: str) -> dict[str, object]:
         "authorized": authorized,
         "reason": reason,
         "access": "read_only_context" if authorized else "none",
-        "owner_confirmed": authorized,
+        "owner_confirmed": bool(authorized and owner_confirmed),
         "grants_platform_action": False,
     }
 
@@ -69,9 +75,6 @@ def authorize(config: Config, request: object) -> dict[str, object]:
     if isinstance(group_id, str) and group_id != "":
         return decision("denied", "private_session_required")
 
-    if not config.is_owner(values["user_id"]):
-        return decision("denied", "owner_not_configured")
-
     legacy_binding = _BINDING_SEPARATOR.join(values[field] for field in _IDENTITY_FIELDS)
     digest_binding = _BINDING_SEPARATOR.join(
         (
@@ -82,10 +85,28 @@ def authorize(config: Config, request: object) -> dict[str, object]:
             values["user_id"],
         )
     )
-    if not any(
+    owner_binding_matches = any(
         candidate in config.quest_session_owner_bindings
         for candidate in (digest_binding, legacy_binding)
-    ):
-        return decision("denied", "quest_identity_not_allowlisted")
+    )
+    read_only_binding_matches = read_only_binding_record(
+        {
+            "api_principal_digest": principal_digest(values["api_principal"]),
+            "client_id": values["client_id"],
+            "platform_id": values["platform_id"],
+            "bot_id": values["bot_id"],
+            "user_id": values["user_id"],
+        }
+    ) in config.quest_session_read_only_bindings
+    if owner_binding_matches:
+        if not config.is_owner(values["user_id"]):
+            return decision("denied", "owner_not_configured")
+        return decision(
+            "authorized",
+            "authorized_private_owner_identity",
+            owner_confirmed=True,
+        )
+    if read_only_binding_matches:
+        return decision("authorized", "authorized_private_quest_identity")
 
-    return decision("authorized", "authorized_private_owner_identity")
+    return decision("denied", "quest_identity_not_allowlisted")
