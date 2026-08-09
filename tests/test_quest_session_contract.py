@@ -47,6 +47,10 @@ def test_contract_is_exact_read_only_and_versioned():
         "bot_id",
         "user_id",
     )
+    assert (
+        contract["binding_principal_storage"]
+        == "sha256_digest_with_legacy_plaintext_read"
+    )
     assert contract["group_id_role"] == "session_context_only"
     assert contract["cross_platform_inheritance"] is False
     assert contract["grants_platform_action"] is False

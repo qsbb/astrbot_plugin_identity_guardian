@@ -7,24 +7,24 @@
     "hint": "关闭后插件整体停用：不再注入身份与关系信息，也不提供任何管理工具和审核能力。"
   },
   "owner_users": {
-    "description": "[关系] bot 主人 QQ 号列表",
+    "description": "[身份] bot 主人的原始平台用户 ID 列表",
     "type": "list",
     "default": [],
     "obvious_hint": true,
     "items": {
       "type": "string"
     },
-    "hint": "填写 QQ 号（OneBot 平台 ID，非 AstrBot 内部 UID）。用于建立主人关系，不依赖聊天文本自称。例如：[\"123456\", \"789012\"]。每项为纯数字 QQ 号字符串。"
+    "hint": "用于平台消息中的主人关系判断，不接受自然人 ID 或聊天文本自称。使用凝心溯溪-临时，建议在临的管理页一次完成 Quest 身份绑定；此处仅保留独立使用序时的兼容配置。"
   },
   "quest_session_owner_bindings": {
-    "description": "[安全] Quest 私聊主人身份精确绑定",
+    "description": "[兼容] Quest 私聊主人身份精确绑定（建议在临中管理）",
     "type": "list",
     "default": [],
     "obvious_hint": true,
     "items": {
       "type": "string"
     },
-    "hint": "默认不授权。每项按 api_principal|client_id|platform_id|bot_id|user_id 填写，五段必须精确匹配，且 user_id 还必须在 owner_users 中。例如 astrbot-api|quest-living-room|aiocqhttp|2058141897|1483904397。这里填写稳定主体名称，不要填写 API token 或密码。"
+    "hint": "默认不授权。安装临后请在临的管理页填写结构化字段，由序原子同步主人和精确绑定。此列表只保留旧配置兼容，不建议手工新增；新绑定会把已认证 API 主体保存为不可逆摘要，绝不填写 token、密码、自然人 ID 或显示名。"
   },
   "friendly_users": {
     "description": "[关系] 额外友好用户 QQ 号列表",

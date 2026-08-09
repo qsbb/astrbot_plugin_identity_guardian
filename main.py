@@ -28,6 +28,11 @@ from .core.context_bridge import (
 )
 from .core.cooldown import CooldownService
 from .core.identity import IdentityManager
+from .core.identity_control_plane import (
+    IdentityControlPlane,
+    contract as identity_control_plane_contract,
+    control_plane_result,
+)
 from .core.knowledge import KnowledgeService
 from .core.moderation import ModerationService
 from .core.models import ActionDecision, ActorContext, TriggerSource
@@ -119,6 +124,7 @@ class IdentityGuardianPlugin(Star):
         super().__init__(context)
         self.context = context
         self.logger = logger
+        self._native_config = config
         diagnostic_event("plugin.init", "身份边界插件开始初始化")
 
         # 数据目录
@@ -128,6 +134,13 @@ class IdentityGuardianPlugin(Star):
         # 配置
         self.config = Config(config)
         self.config.apply_log_level()
+        self._identity_control_plane = IdentityControlPlane(
+            config=self.config,
+            native_config=config,
+            logger=self.logger,
+            stopped=lambda: bool(getattr(self, "_stopped", False)),
+            diagnostic=diagnostic_event,
+        )
 
         if not self.config.enabled:
             logger.info("%s plugin disabled by config", LOG_PREFIX)
@@ -221,6 +234,47 @@ class IdentityGuardianPlugin(Star):
     def diagnostic_clear(self) -> None:
         clear_diagnostic_events()
 
+    def identity_control_plane_contract(self) -> dict[str, object]:
+        """Declare the optional authoritative identity management contract."""
+        return identity_control_plane_contract()
+
+    def get_identity_control_plane(self) -> dict[str, object]:
+        """Return an identifier-free status snapshot for an administrator page."""
+        config = getattr(self, "config", None)
+        if not isinstance(config, Config):
+            return control_plane_result(
+                None,
+                status="error",
+                reason="configuration_unavailable",
+                config_writable=False,
+            )
+        return self._identity_control_plane_service().snapshot()
+
+    async def upsert_quest_owner_binding(self, request: object) -> dict[str, object]:
+        """Atomically persist one owner and its exact Quest client binding."""
+        config = getattr(self, "config", None)
+        if not isinstance(config, Config):
+            return control_plane_result(
+                None,
+                status="error",
+                reason="configuration_unavailable",
+                config_writable=False,
+            )
+        return await self._identity_control_plane_service().upsert(request)
+
+    def _identity_control_plane_service(self) -> IdentityControlPlane:
+        service = getattr(self, "_identity_control_plane", None)
+        if not isinstance(service, IdentityControlPlane):
+            service = IdentityControlPlane(
+                config=self.config,
+                native_config=getattr(self, "_native_config", None),
+                logger=getattr(self, "logger", logger),
+                stopped=lambda: bool(getattr(self, "_stopped", False)),
+                diagnostic=diagnostic_event,
+            )
+            self._identity_control_plane = service
+        return service
+
     def proactive_delivery_authorization_contract(self) -> dict[str, object]:
         """Declare exact-target, private-only authorization for proactive delivery."""
         return {
@@ -254,6 +308,7 @@ class IdentityGuardianPlugin(Star):
             "timeout_ms": 1000,
             "permission_identity_mode": "raw_platform_identity_tuple",
             "permission_identity_fields": ("platform_id", "bot_id", "user_id"),
+            "binding_principal_storage": "sha256_digest_with_legacy_plaintext_read",
             "group_id_role": "session_context_only",
             "cross_platform_inheritance": False,
             "grants_platform_action": False,

@@ -490,12 +490,12 @@ def test_member_bot_set_member_card_on_self_is_rewritten():
     decision = engine.evaluate(
         actor,
         "set_member_card",
-        {"user_id": "555", "card": "小心夏"},
+        {"user_id": "555", "card": "测试名片"},
         TriggerSource.EXPLICIT_REQUEST.value,
     )
     assert decision.allowed is True
     assert decision.action == "set_self_card"
-    assert decision.params == {"card": "小心夏"}
+    assert decision.params == {"card": "测试名片"}
 
 
 def test_member_bot_set_member_card_on_other_still_denied():
@@ -506,7 +506,7 @@ def test_member_bot_set_member_card_on_other_still_denied():
     decision = engine.evaluate(
         actor,
         "set_member_card",
-        {"user_id": "888", "card": "小心夏"},
+        {"user_id": "888", "card": "测试名片"},
         TriggerSource.EXPLICIT_REQUEST.value,
     )
     assert decision.allowed is False
@@ -522,7 +522,7 @@ def test_admin_bot_set_member_card_on_self_is_rewritten():
     decision = engine.evaluate(
         actor,
         "set_member_card",
-        {"user_id": "555", "card": "小心夏"},
+        {"user_id": "555", "card": "测试名片"},
         TriggerSource.EXPLICIT_REQUEST.value,
     )
     assert decision.allowed is True
@@ -537,7 +537,7 @@ def test_set_member_card_without_bot_id_not_rewritten():
     decision = engine.evaluate(
         actor,
         "set_member_card",
-        {"user_id": "555", "card": "小心夏"},
+        {"user_id": "555", "card": "测试名片"},
         TriggerSource.EXPLICIT_REQUEST.value,
     )
     assert decision.allowed is False

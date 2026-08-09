@@ -44,7 +44,7 @@ def test_unwrapped_none_is_success():
 
 def test_unwrapped_dict_is_returned_as_data():
     """拆包后的查询结果原样返回。"""
-    data = {"role": "admin", "card": "小心夏"}
+    data = {"role": "admin", "card": "测试名片"}
     event = SimpleNamespace(bot=_Bot(data))
     assert asyncio.run(OneBotClient().call(event, "get_group_member_info")) == data
 
@@ -102,7 +102,7 @@ def test_set_group_card_reports_success_on_none_response():
     """端到端：改名片成功后必须返回 (True, "")。"""
     event = SimpleNamespace(bot=_Bot(None))
     ok, err = asyncio.run(
-        OneBotClient().set_group_card(event, 701550222, 1483904397, "小心夏")
+        OneBotClient().set_group_card(event, 10001, 20002, "测试名片")
     )
     assert ok is True
     assert err == ""
@@ -113,7 +113,7 @@ def test_set_group_card_reports_failure_on_action_failed():
     exc = _ActionFailed({"retcode": 100, "wording": "权限不足"})
     event = SimpleNamespace(bot=_RaisingBot(exc))
     ok, err = asyncio.run(
-        OneBotClient().set_group_card(event, 701550222, 1483904397, "小心夏")
+        OneBotClient().set_group_card(event, 10001, 20002, "测试名片")
     )
     assert ok is False
     assert err == "set_group_card failed"

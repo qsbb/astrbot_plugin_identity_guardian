@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from .config import Config
+from .identity_control_plane import principal_digest
 
 QUEST_SESSION_AUTH_CONTRACT_NAME = "identity.quest_session_authorization"
 QUEST_SESSION_AUTH_CONTRACT_VERSION = "1.0"
@@ -71,8 +72,20 @@ def authorize(config: Config, request: object) -> dict[str, object]:
     if not config.is_owner(values["user_id"]):
         return decision("denied", "owner_not_configured")
 
-    binding = _BINDING_SEPARATOR.join(values[field] for field in _IDENTITY_FIELDS)
-    if binding not in config.quest_session_owner_bindings:
+    legacy_binding = _BINDING_SEPARATOR.join(values[field] for field in _IDENTITY_FIELDS)
+    digest_binding = _BINDING_SEPARATOR.join(
+        (
+            principal_digest(values["api_principal"]),
+            values["client_id"],
+            values["platform_id"],
+            values["bot_id"],
+            values["user_id"],
+        )
+    )
+    if not any(
+        candidate in config.quest_session_owner_bindings
+        for candidate in (digest_binding, legacy_binding)
+    ):
         return decision("denied", "quest_identity_not_allowlisted")
 
     return decision("authorized", "authorized_private_owner_identity")

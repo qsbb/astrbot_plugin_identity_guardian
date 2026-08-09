@@ -20,7 +20,7 @@
 
 - 版本号以 `metadata.yaml` 为唯一事实源；AstrBot 兼容范围：`>=4.17,<5`；主要支持 `aiocqhttp`。
 - 命令入口：`/idg` 命令组，支持状态、停止/恢复、熔断重置、身份刷新和待确认操作处理。
-- 页面入口：当前实现未提供固定 Plugin Page 管理页；配置在 AstrBot 插件配置中完成。
+- 页面入口：身份控制面由受信任消费者（例如临的管理页）提供结构化入口；序自身仍可通过 AstrBot 插件配置独立使用。
 - 权限身份始终取当前平台事件的原始 `sender_id` 与 bot/group role；情中配置的跨平台自然人归属只用于关系和记忆连续性，不能继承主人、友好、保护、黑名单或群管理权限。
 
 ### 系列诊断日志
@@ -103,21 +103,33 @@
 
 ```json
 {
-  "api_principal": "astrbot-api",
-  "client_id": "quest-living-room",
-  "platform_id": "aiocqhttp",
-  "bot_id": "2058141897",
-  "user_id": "1483904397",
+  "api_principal": "<已认证 API 主体>",
+  "client_id": "<Quest 客户端 ID>",
+  "platform_id": "<平台实例 ID>",
+  "bot_id": "<Bot 原始平台 ID>",
+  "user_id": "<主人原始平台 ID>",
   "group_id": null
 }
 ```
 
 - `api_principal` 是 AstrBot API 已认证的稳定主体名称，不是 token 或密码；`client_id` 是稳定的 Quest 客户端标识。
 - 权限身份三元组固定为原始 `platform_id + bot_id + user_id`；`group_id` 只表示会话上下文，必须显式传入，私聊使用 `null` 或空字符串，任何非空群号均拒绝。
-- 只有 `user_id` 已在 `owner_users` 中，且前五个字段按 `api_principal|client_id|platform_id|bot_id|user_id` 完整写入 `quest_session_owner_bindings` 时才授权。任何一段近似匹配、跨平台或跨 bot 都不会继承。
+- 只有 `user_id` 已在 `owner_users` 中，且完整精确绑定命中时才授权。新配置由控制面按 `sha256(api_principal)|client_id|platform_id|bot_id|user_id` 保存；旧版明文首段仅作读取兼容。任何一段近似匹配、跨平台或跨 bot 都不会继承。
 - 情中的自然人绑定、好感、关系档位和其他平台账号均不参与权限判断；结果不返回身份数据，也不授予发送、群管、主动消息或任何平台动作。
 
 响应固定包含 `contract_version`、`status`、`authorized`、`reason`、`access`、`owner_confirmed` 和 `grants_platform_action`。`status=authorized` 时仅表示 `access=read_only_context`；业务拒绝返回 `denied`，插件关闭或紧急停止返回 `unavailable`，提供方内部异常返回 `error`。消费者遇到契约缺失、major 版本不兼容、超时、异常、非对象响应、字段缺失或任何非 `authorized` 状态都必须失败关闭：不要读取受保护上下文，但可以继续完全隔离的基础 Quest 对话。
+
+### 统一身份控制面契约
+
+序提供可选的 `identity.control_plane@1.0`，让临等受信任插件把结构化管理页面作为代理入口，而不复制身份授权规则：
+
+- `get_identity_control_plane()` 只返回启用状态、可写状态以及主人和 Quest 绑定数量，不返回账号、绑定串、显示名或密钥。
+- `upsert_quest_owner_binding()` 一次接收 API 主体摘要、客户端、平台、Bot 和用户五个字段，原子同步 `owner_users` 与 `quest_session_owner_bindings`；保存失败时运行态不变。
+- API 主体由消费者在服务端派生为 `sha256:<64位十六进制>`，用户无需填写，页面不得显示；新绑定只保存不可逆摘要。旧明文绑定仅为读取兼容，下一次同客户端保存会迁移为摘要。
+- 提供方存在但关闭、停止、拒绝或报错时，消费者不得再把本地白名单与它合并放行。只有完全未安装序时，消费者才可启用自身独立配置回退。
+- 自然人绑定继续由情负责连续关系；自然人 ID、显示名和关系状态永远不能替代原始平台身份或授予权限。
+
+这里的“统一”只统一身份事实和授权裁决，不把所有名为“白名单”的业务开关混为一种权限。言的内容拦截例外、声的自动语音范围、知的知识领域范围和情的高好感门槛仍是各自业务策略；后续可通过控制面按命名空间读取身份角色，但必须保留插件本地配置作为未安装序时的回退，且集中结果与本地结果不得合并扩大权限。
 
 ## 安装
 
