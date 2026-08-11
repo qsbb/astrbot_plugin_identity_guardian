@@ -99,7 +99,7 @@
 
 ### Quest 私聊只读授权契约
 
-序提供 `identity.quest_session_authorization@1.0`，供 Quest Avatar Bridge 判断一个 HTTP 会话能否复用主人范围的只读上下文。调用 `authorize_quest_session(request)`，建议消费者使用契约声明的 `1000ms` 超时。请求必须是普通对象，且只包含下列字段：
+序提供 `identity.quest_session_authorization@1.0`，供 [astrbot_plugin_embodiment_bridge](https://github.com/qsbb/astrbot_plugin_embodiment_bridge) 判断一个 HTTP 会话能否复用主人范围的只读上下文。调用 `authorize_quest_session(request)`，建议消费者使用契约声明的 `1000ms` 超时。请求必须是普通对象，且只包含下列字段：
 
 ```json
 {
