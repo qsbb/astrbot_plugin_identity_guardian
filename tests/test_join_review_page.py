@@ -29,7 +29,8 @@ def test_page_exposes_join_review_api_contract_and_scoped_fields():
         'apiGet("requests")',
         'apiPost("groups/update"',
         'apiPost("groups/batch"',
-        "apiPost(action, { request_id: requestId })",
+        "const payload = { request_id: requestId };",
+        "apiPost(action, payload)",
     ):
         assert endpoint in js
     for field in (
@@ -60,7 +61,13 @@ def test_page_has_busy_guards_and_explicit_reject_confirmation():
     assert "state.batchBusy" in js
     assert "state.requestBusy" in js
     assert "if (state.requestBusy.has(requestId)) return" in js
-    assert 'window.confirm("确定驳回这条入群申请吗？平台成功后状态才会改变。")' in js
+    # 驳回需先展开行内原因输入，再点“确认驳回”才提交；原因可选并随请求上送。
+    assert "rejectConfirmId" in js
+    assert "data-reject-reason" in js
+    assert "data-reject-confirm" in js
+    assert "data-reject-cancel" in js
+    assert 'handleRequestAction(card, "reject", reason)' in js
+    assert "payload.reason = reason" in js
     assert 'setAttribute("aria-busy", String(busy))' in js
 
 

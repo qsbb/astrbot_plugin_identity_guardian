@@ -2,6 +2,8 @@
 
 let bridge = null;
 const API_PREFIX = "join-review";
+// 仅用于渲染层：当前展开行内驳回原因输入的申请 id。
+let rejectConfirmId = null;
 
 const state = {
   joinedGroups: [],
@@ -30,6 +32,7 @@ const API_ERROR_MESSAGES = {
   already_processed: "该申请已由其他管理员处理",
   busy: "该申请正在被其他管理员处理",
   platform_error: "平台操作失败，申请仍未完成",
+  guard_blocked: "插件已紧急停止或已熔断，恢复后才能处理入群申请",
 };
 
 function $(selector, root = document) {
@@ -191,7 +194,9 @@ function mergeGroups() {
     ...group,
     pending_count: Math.max(group.pending_count, pendingCounts.get(groupKey(group.platform_id, group.group_id)) || 0),
   })).sort((left, right) => (
-    left.platform_id.localeCompare(right.platform_id, "zh-CN")
+    // 有审核权限的群默认置顶，无审核权限的排在下面。
+    Number(right.can_review) - Number(left.can_review)
+      || left.platform_id.localeCompare(right.platform_id, "zh-CN")
       || Number(left.group_id) - Number(right.group_id)
   ));
   state.groupMap = new Map(state.groups.map((group) => [groupKey(group.platform_id, group.group_id), group]));
@@ -199,6 +204,24 @@ function mergeGroups() {
     const group = state.groupMap.get(key);
     return group?.joined && group?.can_review;
   }));
+}
+
+function updateStats() {
+  const setStat = (name, value) => {
+    const element = $(`[data-stat="${name}"]`);
+    if (element) {
+      element.classList.remove("skeleton");
+      element.textContent = String(value);
+    }
+  };
+  setStat("total_groups", state.groups.length);
+  setStat("reviewable_groups", state.groups.filter((group) => group.joined && group.can_review).length);
+  setStat(
+    "pending_requests",
+    state.requests.filter((request) =>
+      ["pending", "platform_error"].includes(String(request.status || "pending"))
+    ).length,
+  );
 }
 
 function setButtonBusy(button, busy, busyLabel = "处理中…") {
@@ -213,6 +236,8 @@ function showPageError(error) {
   const element = $("#page-error");
   element.textContent = error?.message || String(error || "操作失败");
   element.classList.remove("hidden");
+  clearTimeout(showPageError.timer);
+  showPageError.timer = setTimeout(() => element.classList.add("hidden"), 6000);
 }
 
 function clearPageError() {
@@ -277,12 +302,14 @@ function renderGroups() {
   $("#group-summary").textContent = `共 ${state.groups.length} 个群，${configuredCount} 个已配置；未配置群默认关闭两个开关。`;
   $("#legacy-notice").classList.toggle("hidden", !state.legacyAvailable);
   updateBatchUi();
+  updateStats();
 }
 
 function updateBatchUi() {
   const selectedCount = state.selected.size;
   const availableCount = state.groups.filter((group) => group.joined && group.can_review).length;
   $("#selected-count").textContent = `已选择 ${selectedCount} 个群`;
+  $("#selected-count").classList.toggle("active", selectedCount > 0);
   const selectAll = $("#select-all");
   selectAll.checked = availableCount > 0 && selectedCount === availableCount;
   selectAll.indeterminate = selectedCount > 0 && selectedCount < availableCount;
@@ -331,11 +358,25 @@ function renderRequestCard(request) {
   const question = stringValue(request.question) || "未提供问题";
   const answer = hasOwn(request, "answer") ? (stringValue(request.answer) || "未填写") : "已按群配置隐藏";
   const error = state.requestErrors.get(requestId) || "";
+  const rejectOpen = rejectConfirmId === requestId && actionable && !busy;
+  const actionsMarkup = rejectOpen
+    ? `<div class="reject-panel">
+        <input class="reject-reason-input" type="text" data-reject-reason maxlength="256"
+          placeholder="驳回原因（可选，将反馈给申请者）" aria-label="驳回原因">
+        <div class="reject-panel-actions">
+          <button class="button compact danger" type="button" data-reject-confirm>确认驳回</button>
+          <button class="button compact" type="button" data-reject-cancel>取消</button>
+        </div>
+      </div>`
+    : `<div class="request-actions">
+        <button class="button compact" type="button" data-request-action="approve"${!actionable || busy ? " disabled" : ""} aria-busy="${busy}">${busy ? "处理中…" : "批准"}</button>
+        <button class="button compact danger" type="button" data-request-action="reject"${!actionable || busy ? " disabled" : ""} aria-busy="${busy}">${busy ? "处理中…" : "驳回"}</button>
+      </div>`;
   return `<article class="request-card" data-request-id="${escapeHtml(requestId)}">
     <div class="request-meta">
       <div class="request-person"><strong>${escapeHtml(nickname)}</strong><span class="secondary-value">QQ ${escapeHtml(userId)} · 等级 ${escapeHtml(level)}</span></div>
+      <span class="status-badge group-badge">${escapeHtml(groupDisplayForRequest(request))}</span>
       <span class="status-badge ${statusClass}">${escapeHtml(statusLabel)}</span>
-      <span class="status-badge">${escapeHtml(groupDisplayForRequest(request))}</span>
       <time class="request-time">${escapeHtml(formatTime(request.created_at))}</time>
     </div>
     <dl class="request-grid">
@@ -345,10 +386,7 @@ function renderRequestCard(request) {
     </dl>
     <div class="request-footer">
       <div class="request-error" role="alert">${escapeHtml(error)}</div>
-      <div class="request-actions">
-        <button class="button compact" type="button" data-request-action="approve"${!actionable || busy ? " disabled" : ""} aria-busy="${busy}">${busy ? "处理中…" : "批准"}</button>
-        <button class="button compact danger" type="button" data-request-action="reject"${!actionable || busy ? " disabled" : ""} aria-busy="${busy}">${busy ? "处理中…" : "驳回"}</button>
-      </div>
+      ${actionsMarkup}
     </div>
   </article>`;
 }
@@ -360,6 +398,7 @@ function renderRequests() {
     : '<p class="empty-state">暂无入群申请。</p>';
   const actionable = state.requests.filter((request) => ["pending", "platform_error"].includes(String(request.status || "pending"))).length;
   $("#request-summary").textContent = `${actionable} 条待处理，共 ${state.requests.length} 条记录。`;
+  updateStats();
 }
 
 function validateQqId(value) {
@@ -525,17 +564,19 @@ async function runBatch(action) {
   }
 }
 
-async function handleRequestAction(card, action) {
+async function handleRequestAction(card, action, reason = "") {
   const requestId = card.dataset.requestId;
   if (!requestId) return;
   if (state.requestBusy.has(requestId)) return;
-  if (action === "reject" && !window.confirm("确定驳回这条入群申请吗？平台成功后状态才会改变。")) return;
+  rejectConfirmId = null;
 
   state.requestBusy.add(requestId);
   state.requestErrors.delete(requestId);
   renderRequests();
   try {
-    await apiPost(action, { request_id: requestId });
+    const payload = { request_id: requestId };
+    if (action === "reject" && reason) payload.reason = reason;
+    await apiPost(action, payload);
     await refreshStoredData();
     showStatus(action === "approve" ? "申请已批准。" : "申请已驳回。");
   } catch (error) {
@@ -616,9 +657,31 @@ function bindEvents() {
   $("#apply-legacy").addEventListener("click", () => runBatch("apply_legacy"));
 
   $("#requests-list").addEventListener("click", (event) => {
+    const confirmButton = event.target.closest("[data-reject-confirm]");
+    if (confirmButton) {
+      const card = confirmButton.closest("[data-request-id]");
+      if (!card) return;
+      const reason = $("[data-reject-reason]", card)?.value.trim() || "";
+      handleRequestAction(card, "reject", reason);
+      return;
+    }
+    if (event.target.closest("[data-reject-cancel]")) {
+      rejectConfirmId = null;
+      renderRequests();
+      return;
+    }
     const button = event.target.closest("[data-request-action]");
     if (!button) return;
     const card = button.closest("[data-request-id]");
+    if (button.dataset.requestAction === "reject") {
+      // 驳回改为行内展开原因输入，点“确认驳回”才真正提交。
+      const requestId = String(card.dataset.requestId || "");
+      if (!requestId || state.requestBusy.has(requestId)) return;
+      rejectConfirmId = requestId;
+      renderRequests();
+      $(`[data-request-id="${CSS.escape(requestId)}"] [data-reject-reason]`)?.focus();
+      return;
+    }
     handleRequestAction(card, button.dataset.requestAction);
   });
 }

@@ -3,38 +3,48 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>序 · 入群审核</title>
+  <title>凝心溯溪-序 · 入群审核</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <div class="page-shell">
-    <header class="page-header">
-      <div>
-        <p class="series-name">凝心溯溪 · 序</p>
-        <h1>入群审核</h1>
-        <p class="subtitle">按 Bot 与群分别管理自动审核和人工审核通知。</p>
+  <main class="shell">
+    <header class="hero">
+      <div class="hero-title">
+        <p class="eyebrow">AstrBot 插件管理页</p>
+        <h1>凝心溯溪-序 <span class="hero-badge"><span class="hero-badge-dot" aria-hidden="true"></span>Identity Guardian</span></h1>
+        <p class="hero-subtitle">关系感知、权限边界与群组行动 · 入群审核</p>
       </div>
-      <button id="refresh-joined" class="button secondary" type="button">
-        <span aria-hidden="true">↻</span> 刷新已加入群
-      </button>
+      <div class="toolbar">
+        <button id="refresh-joined" class="button" type="button">↻ 刷新已加入群</button>
+      </div>
     </header>
 
-    <div id="page-error" class="notice error hidden" role="alert"></div>
-    <div id="page-status" class="notice success hidden" role="status"></div>
+    <div class="toast-stack">
+      <div id="page-error" class="notice error hidden" role="alert"></div>
+      <div id="page-status" class="notice success hidden" role="status"></div>
+    </div>
 
-    <section id="legacy-notice" class="legacy-notice hidden" aria-labelledby="legacy-title">
-      <div>
-        <h2 id="legacy-title">检测到旧版全局审核配置</h2>
-        <p>旧配置不会自动启用。请勾选要迁移的群，再明确应用。</p>
+    <div class="cards" aria-label="审核概览">
+      <article class="metric metric-total"><span>群总数</span><strong class="skeleton" data-stat="total_groups">—</strong></article>
+      <article class="metric metric-reviewable"><span>可审核群</span><strong class="accent skeleton" data-stat="reviewable_groups">—</strong></article>
+      <article class="metric metric-pending"><span>待审申请</span><strong class="warn skeleton" data-stat="pending_requests">—</strong></article>
+    </div>
+
+    <section id="legacy-notice" class="card legacy-notice hidden" aria-labelledby="legacy-title">
+      <div class="section-heading">
+        <div>
+          <h2 id="legacy-title">检测到旧版全局审核配置</h2>
+          <p>旧配置不会自动启用。请勾选要迁移的群，再明确应用。</p>
+        </div>
+        <button id="apply-legacy" class="button secondary" type="button">应用旧配置到所选群</button>
       </div>
-      <button id="apply-legacy" class="button secondary" type="button">应用旧配置到所选群</button>
     </section>
 
-    <section class="workspace-section" aria-labelledby="groups-title">
+    <article class="card" aria-labelledby="groups-title">
       <div class="section-heading">
         <div>
           <h2 id="groups-title">群配置</h2>
-          <p id="group-summary" class="muted">正在读取群列表…</p>
+          <p id="group-summary">正在读取群列表…</p>
         </div>
       </div>
 
@@ -74,23 +84,21 @@
           </tbody>
         </table>
       </div>
-    </section>
+    </article>
 
-    <section class="workspace-section" aria-labelledby="requests-title">
+    <article class="card" aria-labelledby="requests-title">
       <div class="section-heading request-heading">
         <div>
           <h2 id="requests-title">待审申请</h2>
-          <p id="request-summary" class="muted">正在读取申请…</p>
+          <p id="request-summary">正在读取申请…</p>
         </div>
-        <button id="refresh-requests" class="button secondary compact" type="button">
-          <span aria-hidden="true">↻</span> 刷新申请
-        </button>
+        <button id="refresh-requests" class="button secondary compact" type="button">↻ 刷新申请</button>
       </div>
       <div id="requests-list" class="request-list" aria-live="polite">
         <p class="empty-state">正在加载…</p>
       </div>
-    </section>
-  </div>
+    </article>
+  </main>
 
   <script src="/api/plugin/page/bridge-sdk.js"></script>
   <script src="./app.js"></script>
