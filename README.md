@@ -206,24 +206,31 @@ pip install -r requirements.txt
 
 ### 入群审核
 
-| 配置项 | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `join_audit_mode` | string | `off` | 入群审核模式：off / approve_only / notify_only |
-| `join_questions` | list<string> | `[]` | 入群问答配置，每项一行，格式 `问题\|答案1,答案2`。例如 `["1+1=?\|2,二", "本群做什么的\|技术交流,编程讨论"]`。不含 `\|` 时整体视为答案。留空则仅依赖 LLM 语义判断 |
-| `join_approve_threshold` | float | `0.9` | 自动通过的最低置信度，取值 0-1；调低会更激进地放行陌生人，建议不低于 0.85 |
-| `audit_notify_targets` | list<string> | `[]` | 审核人工通知目标列表（AstrBot 会话 ID，unified_msg_origin 格式）。例如 `["aiocqhttp:GroupMessage:123456"]` |
-| `pending_ttl_hours` | int | `24` | 待审请求保留时长（小时） |
+AstrBot 插件详情中的 `pages/join_review` 是当前生效的入群审核控制面。配置按
+`platform_id + group_id` 隔离；刷新已加入群只读 OneBot `get_group_list` / 群信息和权限，
+不会自动写配置。新群与未配置群的两个开关均默认关闭。
 
-`join_audit_mode` 的执行边界：
+| 自动审核 | 发送审核 | 行为 |
+| --- | --- | --- |
+| 关 | 关 | 忽略申请，保持 QQ 原始状态 |
+| 开 | 关 | 执行自动审核；未实际批准时保持 QQ 原始待审，不发通知 |
+| 关 | 开 | 不调用 LLM，直接写入人工待审并按群配置通知 |
+| 开 | 开 | 先自动审核；只有平台批准成功才结束，其余结果全部转人工 |
 
-| 模式 | 自动通过 | 自动拒绝 | 通知管理员 |
-|---|---|---|---|
-| `off` | 否 | 否 | 否 |
-| `approve_only` | 仅高置信度正确时 | 永不 | 可按配置通知待审项 |
-| `notify_only` | 永不 | 永不 | 是，只生成待审通知 |
+插件永不自动拒绝申请。只有 Dashboard 管理员在入群审核 Page 明确点击“驳回”，且 Bot
+当前仍具备该群审核权限、OneBot API 返回成功后，记录才会变为 `rejected`。通知可发送到
+申请所属群、指定审核群或两边；指定审核群只能来自该群保存的配置白名单。
 
-`notify_only` 不会调用 OneBot 的通过或拒绝接口；LLM 判断、知识桥接异常、答案错误或置信度不足
-也都不能让它自动执行申请操作。
+旧配置仍保留，但不会自动启用任何群：
+
+| 配置项 | 用途 |
+| --- | --- |
+| `join_audit_mode` | 仅作为 Page 中“应用旧配置”的显式迁移来源 |
+| `join_questions` | 各已开启自动审核群共用的问答模板 |
+| `join_approve_threshold` | 自动批准最低置信度 |
+| `audit_llm_provider` | 自动审核 LLM Provider |
+| `audit_notify_targets` | 只读兼容旧版本，不再用于新通知投递 |
+| `pending_ttl_hours` | 人工待审记录 TTL，默认 24 小时 |
 
 ### 知识库联动
 
@@ -267,7 +274,6 @@ pip install -r requirements.txt
 | `set_member_card` | 设置群成员名片。普通成员只能修改自己的名片 |
 | `set_group_name` | 修改群名称。需人工确认 |
 | `set_whole_ban` | 开启或关闭全员禁言。高风险操作，需人工确认 |
-| `approve_join_request` | 批准入群申请 |
 
 ### 仅群主
 
@@ -377,6 +383,8 @@ ActionDecision = PolicyEngine.evaluate(
 │  ├─ policy.py      身份×关系×目标×动作统一授权策略           │
 │  ├─ capability.py  能力描述与工具注册                         │
 │  ├─ audit.py       入群申请判断与仅通过执行                  │
+│  ├─ join_review*.py 按群配置、人工队列、通知和 Page API      │
+│  ├─ group_discovery.py 只读发现 aiocqhttp Bot 与群权限       │
 │  ├─ knowledge.py   active_learner 只读知识检索桥接           │
 │  ├─ moderation.py  内容审核（违规判断、分级处罚）            │
 │  ├─ welcome.py     bot 进群欢迎                             │

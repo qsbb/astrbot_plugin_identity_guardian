@@ -1,0 +1,8 @@
+{
+  "pages": {
+    "join_review": {
+      "title": "入群审核",
+      "description": "按 Bot 和群配置自动审核、人工通知与待审处理"
+    }
+  }
+}

@@ -64,9 +64,10 @@ def test_contract_is_exact_read_only_and_versioned():
     assert contract["response_schema"]["properties"]["grants_platform_action"] == {
         "const": False
     }
-    assert "authorized_private_quest_identity" in contract["response_schema"][
-        "reason_values"
-    ]
+    assert (
+        "authorized_private_quest_identity"
+        in contract["response_schema"]["reason_values"]
+    )
 
 
 def test_exact_private_owner_binding_is_authorized_without_side_effects():
@@ -104,9 +105,7 @@ def test_exact_private_owner_binding_is_authorized_without_side_effects():
         ({"user_id": "owner|1"}, "invalid_user_id"),
     ],
 )
-def test_group_alias_cross_identity_and_malformed_fields_are_denied(
-    overrides, reason
-):
+def test_group_alias_cross_identity_and_malformed_fields_are_denied(overrides, reason):
     result = _plugin().authorize_quest_session(_request(**overrides))
 
     assert result["status"] == "denied"

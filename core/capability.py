@@ -24,7 +24,6 @@ CAPABILITY_MAP: dict[str, dict[str, str]] = {
     "set_member_card": {"min_role": "admin", "tool_name": "set_member_card"},
     "set_group_name": {"min_role": "admin", "tool_name": "set_group_name"},
     "set_whole_ban": {"min_role": "admin", "tool_name": "set_whole_ban"},
-    "approve_join_request": {"min_role": "admin", "tool_name": "approve_join_request"},
     "set_member_title": {"min_role": "owner", "tool_name": "set_member_title"},
     "set_group_admin": {"min_role": "owner", "tool_name": "set_group_admin"},
     "set_self_card": {"min_role": "member", "tool_name": "set_self_card"},
@@ -37,6 +36,8 @@ CAPABILITY_MAP: dict[str, dict[str, str]] = {
 
 # 所有 LLM 工具名
 ALL_TOOL_NAMES: list[str] = [cap["tool_name"] for cap in CAPABILITY_MAP.values()]
+RETIRED_TOOL_NAMES: frozenset[str] = frozenset({"approve_join_request"})
+ALL_MANAGED_TOOL_NAMES: frozenset[str] = frozenset(ALL_TOOL_NAMES) | RETIRED_TOOL_NAMES
 
 
 def llm_tool_name(tool: Any) -> str:
@@ -58,7 +59,7 @@ def filter_tools_for_role(tools: list[Any], role: str) -> list[Any]:
     return [
         tool
         for tool in tools
-        if llm_tool_name(tool) not in ALL_TOOL_NAMES
+        if llm_tool_name(tool) not in ALL_MANAGED_TOOL_NAMES
         or llm_tool_name(tool) in allowed_tool_names
     ]
 
@@ -69,7 +70,7 @@ def blocked_tool_names_for_role(role: str) -> set[str]:
         CAPABILITY_MAP[capability]["tool_name"]
         for capability in capabilities_for_role(role)
     }
-    return {name for name in ALL_TOOL_NAMES if name not in allowed}
+    return {name for name in ALL_MANAGED_TOOL_NAMES if name not in allowed}
 
 
 def filter_request_tools_for_role(req: Any, role: str) -> int:

@@ -202,9 +202,6 @@ class PolicyEngine:
         if action == "set_whole_ban":
             return self._check_whole_ban(context, params, is_friendly_requester)
 
-        if action == "approve_join_request":
-            return self._check_approve_join(context, params, is_friendly_requester)
-
         # 只读工具默认允许
         if action in ("get_group_member_info", "list_group_members"):
             return ActionDecision(allowed=True, action=action, params=params)
@@ -495,26 +492,6 @@ class PolicyEngine:
             action="set_whole_ban",
             params=params,
             requires_confirmation=True,
-        )
-
-    def _check_approve_join(
-        self, context: ActorContext, params: dict[str, Any], is_friendly: bool
-    ) -> ActionDecision:
-        """检查 approve_join_request 授权。"""
-        if self.config.join_audit_mode != "approve_only":
-            return ActionDecision(
-                allowed=False,
-                action="approve_join_request",
-                reason="当前入群审核模式不允许自动通过",
-            )
-        if not is_friendly:
-            return ActionDecision(
-                allowed=False,
-                action="approve_join_request",
-                reason="普通成员不能处理入群请求",
-            )
-        return ActionDecision(
-            allowed=True, action="approve_join_request", params=params
         )
 
     def _is_protected(self, user_id: str, role: str = "member") -> bool:

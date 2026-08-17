@@ -126,12 +126,12 @@
     "hint": "在管理 API 真正执行前校验白名单、频率、批量、熔断。命中即阻断。强烈建议始终开启。"
   },
   "join_audit_mode": {
-    "description": "[入群] 入群审核模式",
+    "description": "[兼容] 旧版全局入群审核模式",
     "type": "string",
     "default": "off",
     "obvious_hint": true,
     "options": ["off", "approve_only", "notify_only"],
-    "hint": "approve_only 仅答案高置信度正确时自动放行，答错或不确定一律保持待审，不会自动拒绝；notify_only 只通知管理员，不自动处理；off 完全不处理。"
+    "hint": "仅保留旧配置兼容，不会自动应用到任何群。请在插件的“入群审核”页面选择具体 Bot 和群后显式迁移；新群和未配置群的两个开关始终默认关闭。"
   },
   "join_questions": {
     "description": "[入群] 入群问答配置（每项一行）",
@@ -175,13 +175,13 @@
     "hint": "用于内容审核与入群问答裁决，可填便宜模型降低成本"
   },
   "audit_notify_targets": {
-    "description": "[通知] 审核人工通知目标列表（会话 ID）",
+    "description": "[兼容] 旧版审核人工通知目标列表（会话 ID）",
     "type": "list",
     "default": [],
     "items": {
       "type": "string"
     },
-    "hint": "填写 AstrBot 会话 ID（unified_msg_origin 格式）。支持多个目标。例如：[\"aiocqhttp:GroupMessage:123456\", \"aiocqhttp:PrivateMessage:888888\"]。入群申请未自动处理时会通知这些会话。"
+    "hint": "仅保留旧版本兼容。新的入群审核通知目标必须在“入群审核”页面按 Bot 和群配置，旧列表不会自动扩散或启用任何群。"
   },
   "confirm_notify_targets": {
     "description": "[通知] 二次确认通知目标列表（会话 ID）",

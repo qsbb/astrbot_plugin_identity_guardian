@@ -71,9 +71,7 @@ _TOPIC_PATTERNS = (
         rf"(?:我)?(?:同意|允许|可以)(?:你)?(?:在)?{_GROUP_REF}?"
         rf"(?:提|聊|说|谈)(?:一下)?{_PRIVATE_REF}(?:的)?(?:话题|那件事|那个)"
     ),
-    re.compile(
-        rf"(?:接着|继续){_PRIVATE_REF}(?:的)?(?:话题|那件事|那个)?(?:聊|说|谈)"
-    ),
+    re.compile(rf"(?:接着|继续){_PRIVATE_REF}(?:的)?(?:话题|那件事|那个)?(?:聊|说|谈)"),
 )
 
 
@@ -213,9 +211,7 @@ def authorize(event: Any, source_scope: str, target_scope: str) -> dict[str, obj
         return decision(False, "group_to_group_denied")
 
     # private -> group：只信当前群事件自己的正文，不接受调用方传入文本，也不记忆同意。
-    mode, reason = classify_private_to_group_consent(
-        extract_current_plain_text(event)
-    )
+    mode, reason = classify_private_to_group_consent(extract_current_plain_text(event))
     if mode == MODE_TOPIC_ONLY:
         return decision(
             True,

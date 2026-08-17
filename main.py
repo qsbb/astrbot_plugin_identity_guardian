@@ -1,7 +1,7 @@
 """凝心溯溪-序插件主类。
 
 动态识别 bot、发送者与目标身份及关系，向 LLM 注入受控行动边界，
-并提供自助动作、互动反应、群信息管理和仅自动通过的入群审核能力。
+并提供自助动作、互动反应、群信息管理以及按 Bot/群隔离的自动与人工入群审核能力。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 from . import __version__
 from .core.audit import JoinAuditService
 from .core.audit_log import AuditLogger
-from .core.capability import ALL_TOOL_NAMES, filter_request_tools_for_role
+from .core.capability import ALL_MANAGED_TOOL_NAMES, filter_request_tools_for_role
 from .core.config import Config
 from .core.confirm import ConfirmService
 from .core.context_bridge import (
@@ -34,6 +34,9 @@ from .core.identity_control_plane import (
     control_plane_result,
 )
 from .core.knowledge import KnowledgeService
+from .core.join_review import JoinReviewRuntime
+from .core.join_review_api import JoinReviewPageAPI
+from .core.join_review_store import JoinReviewStore
 from .core.moderation import ModerationService
 from .core.models import ActionDecision, ActorContext, TriggerSource
 from .core.onebot import OneBotClient
@@ -175,6 +178,21 @@ class IdentityGuardianPlugin(Star):
         self.join_audit = JoinAuditService(
             self.config, self.onebot, self.knowledge, llm_caller=None
         )
+        self.join_review_store = JoinReviewStore(
+            self.data_dir,
+            ttl_seconds=self.config.pending_ttl_hours * 60 * 60,
+        )
+        self.join_review = JoinReviewRuntime(
+            self.join_audit, self.onebot, self.join_review_store
+        )
+        self.join_review_page_api = JoinReviewPageAPI(
+            context=self.context,
+            config=self.config,
+            store=self.join_review_store,
+            runtime=self.join_review,
+            logger=self.logger,
+        )
+        self.join_review_page_available = self.join_review_page_api.register()
 
         # 紧急停止标志
         self._stopped = False
@@ -462,7 +480,9 @@ class IdentityGuardianPlugin(Star):
         try:
             return authorize_context_bridge_request(event, source_scope, target_scope)
         except Exception as exc:  # pragma: no cover - 最终失败关闭护栏
-            self.logger.debug("%s context bridge authorization failed: %s", LOG_PREFIX, exc)
+            self.logger.debug(
+                "%s context bridge authorization failed: %s", LOG_PREFIX, exc
+            )
             return context_bridge_decision(False, "authorization_failed")
 
     def authorize_proactive_delivery(self, recipient_umo: str) -> dict[str, object]:
@@ -610,7 +630,9 @@ class IdentityGuardianPlugin(Star):
                 return str(resp.completion_text)
             return str(resp)
         except Exception as exc:
-            self.logger.warning("%s audit LLM call failed: %s", LOG_PREFIX, exc)
+            self.logger.warning(
+                "%s audit LLM call failed: %s", LOG_PREFIX, type(exc).__name__
+            )
             return ""
 
     def _ensure_llm_caller(self) -> None:
@@ -871,15 +893,25 @@ class IdentityGuardianPlugin(Star):
         if req_type != "group":
             return
 
-        if self.config.join_audit_mode == "off":
+        runtime = getattr(self, "join_review", None)
+        if runtime is not None:
+            # The runtime reads the scoped switches first. Binding the LLM caller
+            # is lazy and does not itself invoke a provider for send-only groups.
+            self._ensure_llm_caller()
+            try:
+                await runtime.handle_event(event, raw)
+            except Exception as exc:
+                self.logger.warning(
+                    "%s join review failed: %s", LOG_PREFIX, type(exc).__name__
+                )
             return
 
+        # Compatibility for partially constructed instances in older callers.
+        if self.config.join_audit_mode == "off":
+            return
         self._ensure_llm_caller()
-
         try:
             decision = await self.join_audit.handle_request(event, raw)
-
-            # notify_only 下所有结论都交由人工；approve_only 下仅通知未自动放行项。
             if (
                 not self.join_audit.should_auto_approve(decision)
                 and self.config.audit_notify_targets
@@ -1209,15 +1241,6 @@ class IdentityGuardianPlugin(Star):
                 event, group_id, bool(params.get("enable", True))
             )
 
-        elif action == "approve_join_request":
-            ok, err = await self.onebot.set_group_add_request(
-                event,
-                str(params.get("flag", "")),
-                str(params.get("sub_type", "add")),
-                approve=True,
-                reason="",
-            )
-
         else:
             return f"未实现的动作: {action}"
 
@@ -1514,36 +1537,6 @@ class IdentityGuardianPlugin(Star):
             trigger_source=TriggerSource.EXPLICIT_REQUEST.value,
         )
 
-    @filter.llm_tool(name="approve_join_request")
-    async def approve_join_request(
-        self,
-        event: AstrMessageEvent,
-        flag: str,
-        sub_type: str = "add",
-        approve: bool = True,
-        reason: str = "",
-    ):
-        """处理入群申请。仅高置信度正确时建议通过，错误答案不自动拒绝。
-
-        Args:
-            flag(string): 申请 flag，由 OneBot 事件提供
-            sub_type(string): add（加群）或 invite（邀请）
-            approve(bool): true=通过, false=拒绝
-            reason(string): 处理原因
-        """
-        plugin = IdentityGuardianPlugin._current_instance or self
-        if not isinstance(plugin, IdentityGuardianPlugin):
-            return "插件初始化中，请稍后重试。"
-        # 入群审核只允许 bot 自主通过正确答案；不通过 LLM 直接拒绝
-        if not approve:
-            return "入群申请不自动拒绝，请在 QQ 群审核入口人工处理。"
-        return await plugin._execute_with_guard(
-            event,
-            "approve_join_request",
-            {"flag": flag, "sub_type": sub_type, "approve": approve, "reason": reason},
-            trigger_source=TriggerSource.JOIN_AUDIT.value,
-        )
-
     @filter.llm_tool(name="get_group_member_info")
     async def get_group_member_info_tool(
         self,
@@ -1594,11 +1587,23 @@ class IdentityGuardianPlugin(Star):
             for item in plugin.confirm.list_pending()
             if current_group and str(item.group_id) == current_group
         ]
+        review_store = getattr(plugin, "join_review_store", None)
+        review_configs = (
+            await review_store.list_group_configs() if review_store is not None else []
+        )
+        review_pending = (
+            await review_store.list_requests(status=("pending", "platform_error"))
+            if review_store is not None
+            else []
+        )
+        auto_groups = sum(item.auto_audit_enabled for item in review_configs)
+        send_groups = sum(item.review_send_enabled for item in review_configs)
         lines = [
             f"凝心溯溪-序 {__version__}",
             f"状态: {'已停止' if plugin._stopped else '运行中'}",
             f"bot 身份刷新间隔: {plugin.config.identity_refresh_interval}s",
-            f"入群审核: {plugin.config.join_audit_mode}",
+            f"入群审核: {len(review_configs)} 群已配置 "
+            f"(自动 {auto_groups} / 人工通知 {send_groups} / 待审 {len(review_pending)})",
             f"内容审核: {'开启' if plugin.config.auto_moderate else '关闭'}",
             f"API 护栏: {'开启' if plugin.config.enable_api_guard else '关闭'}",
             f"熔断状态: {'已触发' if stats['breaker_tripped'] else '正常'}",
@@ -1753,6 +1758,15 @@ class IdentityGuardianPlugin(Star):
                     self.logger.info(
                         "%s expired %d pending confirm(s)", LOG_PREFIX, expired
                     )
+                review_store = getattr(self, "join_review_store", None)
+                if review_store is not None:
+                    review_expired = await review_store.cleanup_expired()
+                    if review_expired:
+                        self.logger.info(
+                            "%s expired %d join-review request(s)",
+                            LOG_PREFIX,
+                            review_expired,
+                        )
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -1768,12 +1782,22 @@ class IdentityGuardianPlugin(Star):
         self._stopped = True
 
         # 取消后台任务
-        for task in self._bg_tasks:
+        tasks = list(self._bg_tasks)
+        for task in tasks:
             try:
                 task.cancel()
             except Exception:
                 pass
         self._bg_tasks.clear()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        review_store = getattr(self, "join_review_store", None)
+        if review_store is not None:
+            try:
+                await review_store.close()
+            except Exception:
+                pass
 
         try:
             self.cooldown.clear()
@@ -1799,7 +1823,7 @@ class IdentityGuardianPlugin(Star):
             if not callable(method):
                 continue
             try:
-                for name in ALL_TOOL_NAMES:
+                for name in ALL_MANAGED_TOOL_NAMES:
                     method(name)
                 self.logger.info(
                     "%s cleanup: removed LLM tools via %s", LOG_PREFIX, method_name
@@ -1820,7 +1844,7 @@ class IdentityGuardianPlugin(Star):
                 return
             before = len(tools)
             func_tool_manager.tools = [
-                t for t in tools if getattr(t, "name", "") not in ALL_TOOL_NAMES
+                t for t in tools if getattr(t, "name", "") not in ALL_MANAGED_TOOL_NAMES
             ]
             after = len(func_tool_manager.tools)
             if before != after:

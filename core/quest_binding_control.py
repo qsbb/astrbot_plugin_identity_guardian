@@ -27,16 +27,10 @@ def _digest(value: str) -> str:
 def read_only_binding_record(values: dict[str, str]) -> str:
     client_hash = _digest(values["client_id"])
     principal_client_hash = _digest(
-        values["api_principal_digest"]
-        + _BINDING_SEPARATOR
-        + values["client_id"]
+        values["api_principal_digest"] + _BINDING_SEPARATOR + values["client_id"]
     )
-    binding = _BINDING_SEPARATOR.join(
-        values[field] for field in QUEST_BINDING_FIELDS
-    )
-    return (
-        f"{_RECORD_PREFIX}:{client_hash}:{principal_client_hash}:{_digest(binding)}"
-    )
+    binding = _BINDING_SEPARATOR.join(values[field] for field in QUEST_BINDING_FIELDS)
+    return f"{_RECORD_PREFIX}:{client_hash}:{principal_client_hash}:{_digest(binding)}"
 
 
 def updated_read_only_bindings(config: Config, values: dict[str, str]) -> list[str]:
@@ -55,8 +49,7 @@ def updated_read_only_bindings(config: Config, values: dict[str, str]) -> list[s
             and digest_parts[0] == _RECORD_PREFIX
             and digest_parts[1] == client_hash
         ) or (
-            len(raw_parts) == len(QUEST_BINDING_FIELDS)
-            and raw_parts[1] == client_id
+            len(raw_parts) == len(QUEST_BINDING_FIELDS) and raw_parts[1] == client_id
         ):
             continue
         if normalized not in bindings:

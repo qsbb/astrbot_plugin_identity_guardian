@@ -76,11 +76,17 @@ def updated_quest_owner_settings(
     owners are not removed because they may still authorize ordinary platform
     events or another Quest client.
     """
-    owner_users = list(dict.fromkeys(str(item).strip() for item in config.owner_users if str(item).strip()))
+    owner_users = list(
+        dict.fromkeys(
+            str(item).strip() for item in config.owner_users if str(item).strip()
+        )
+    )
     if values["user_id"] not in owner_users:
         owner_users.append(values["user_id"])
 
-    replacement = _BINDING_SEPARATOR.join(values[field] for field in QUEST_BINDING_FIELDS)
+    replacement = _BINDING_SEPARATOR.join(
+        values[field] for field in QUEST_BINDING_FIELDS
+    )
     client_id = values["client_id"]
     bindings: list[str] = []
     for item in config.quest_session_owner_bindings:
@@ -109,7 +115,9 @@ def control_plane_result(
 ) -> dict[str, object]:
     """Build the identifier-free control-plane response."""
     owner_count = len(config.owner_users) if config is not None else 0
-    binding_count = len(config.quest_session_owner_bindings) if config is not None else 0
+    binding_count = (
+        len(config.quest_session_owner_bindings) if config is not None else 0
+    )
     return {
         "contract_version": IDENTITY_CONTROL_PLANE_CONTRACT_VERSION,
         "status": status,

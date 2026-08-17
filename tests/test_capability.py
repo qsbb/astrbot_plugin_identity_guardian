@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.capability import (  # noqa: E402
+    ALL_MANAGED_TOOL_NAMES,
     ALL_TOOL_NAMES,
     blocked_tool_names_for_role,
     CAPABILITY_MAP,
@@ -158,7 +159,9 @@ def test_blocked_tool_names_for_role():
     assert "mute_member" in blocked
     assert "set_member_title" in blocked
     assert "set_self_card" not in blocked
-    assert not blocked_tool_names_for_role("owner")
+    assert blocked_tool_names_for_role("owner") == {"approve_join_request"}
+    assert "approve_join_request" in ALL_MANAGED_TOOL_NAMES
+    assert "approve_join_request" not in ALL_TOOL_NAMES
 
 
 def test_filter_request_tools_uses_func_tool():
@@ -176,6 +179,13 @@ def test_filter_request_tools_owner_keeps_all():
     req = _FakeRequest(["set_self_card", "mute_member", "set_member_title"])
     assert filter_request_tools_for_role(req, "owner") == 0
     assert len(req.func_tool.names()) == 3
+
+
+def test_filter_request_tools_removes_retired_flag_tool_for_every_role():
+    """热重载残留的旧 flag 工具即使对群主也必须移除。"""
+    req = _FakeRequest(["approve_join_request", "set_self_card"])
+    assert filter_request_tools_for_role(req, "owner") == 1
+    assert req.func_tool.names() == ["set_self_card"]
 
 
 def test_filter_request_tools_admin_hides_owner_only():

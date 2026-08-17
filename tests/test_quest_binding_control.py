@@ -124,8 +124,12 @@ def test_rebind_replaces_only_same_read_only_client():
     result = asyncio.run(_plugin(native).upsert_quest_binding(_request()))
 
     assert result["read_only_binding_count"] == 2
-    assert all("old-user" not in item for item in native["quest_session_read_only_bindings"])
-    assert any("quest-other" in item for item in native["quest_session_read_only_bindings"])
+    assert all(
+        "old-user" not in item for item in native["quest_session_read_only_bindings"]
+    )
+    assert any(
+        "quest-other" in item for item in native["quest_session_read_only_bindings"]
+    )
     assert native["owner_users"] == []
 
 

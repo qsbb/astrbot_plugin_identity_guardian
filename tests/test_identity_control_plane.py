@@ -130,8 +130,13 @@ def test_upsert_atomically_saves_owner_digest_binding_and_authorizes():
     assert result["owner_count"] == 2
     assert result["quest_binding_count"] == 2
     assert native["owner_users"] == ["owner-old", "owner-main"]
-    assert all("test-only-principal" not in item for item in native["quest_session_owner_bindings"])
-    assert all("legacy-secret" not in item for item in native["quest_session_owner_bindings"])
+    assert all(
+        "test-only-principal" not in item
+        for item in native["quest_session_owner_bindings"]
+    )
+    assert all(
+        "legacy-secret" not in item for item in native["quest_session_owner_bindings"]
+    )
     assert native["quest_session_owner_bindings"][-1].startswith("sha256:")
     assert plugin.authorize_quest_session(_runtime_request())["authorized"] is True
 
@@ -168,7 +173,10 @@ def test_failed_save_does_not_change_runtime_or_persisted_state(
     ("payload", "reason"),
     [
         ({}, "missing_api_principal_digest"),
-        (_request(api_principal_digest="api_key:plaintext"), "invalid_api_principal_digest"),
+        (
+            _request(api_principal_digest="api_key:plaintext"),
+            "invalid_api_principal_digest",
+        ),
         (_request(user_id="owner|injected"), "invalid_user_id"),
         ({**_request(), "extra": "value"}, "unexpected_fields"),
     ],

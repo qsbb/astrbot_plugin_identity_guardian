@@ -1,0 +1,314 @@
+"""Authenticated Plugin Page API for per-group join-request review."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+try:
+    from astrbot.api.web import json_response, request
+except ImportError:  # pragma: no cover - isolated unit tests mock AstrBot
+    json_response = None
+    request = None
+
+from .group_discovery import JoinedGroup, discover_joined_groups
+from .join_review import JoinReviewRuntime
+from .join_review_store import (
+    JoinReviewStore,
+    RequestNotActionable,
+    ValidationError,
+)
+
+PLUGIN_ID = "astrbot_plugin_identity_guardian"
+ROUTE_PREFIX = f"/{PLUGIN_ID}/join-review"
+_BATCH_ACTIONS = frozenset(
+    {
+        "add",
+        "enable_auto_audit",
+        "enable_review_send",
+        "disable_all",
+        "apply_legacy",
+    }
+)
+
+
+class JoinReviewPageAPI:
+    """Small adapter between AstrBot's authenticated Page bridge and core services."""
+
+    def __init__(
+        self,
+        *,
+        context: Any,
+        config: Any,
+        store: JoinReviewStore,
+        runtime: JoinReviewRuntime,
+        logger: Any,
+    ) -> None:
+        self.context = context
+        self.config = config
+        self.store = store
+        self.runtime = runtime
+        self.logger = logger
+
+    def register(self) -> bool:
+        register = getattr(self.context, "register_web_api", None)
+        if not callable(register):
+            self.logger.warning(
+                "[idg] context.register_web_api unavailable; join-review Page disabled"
+            )
+            return False
+        routes = (
+            ("joined-groups", self.joined_groups, ["GET"], "刷新已加入群"),
+            ("groups", self.groups, ["GET"], "读取入群审核群配置"),
+            ("groups/update", self.update_group, ["POST"], "保存单群审核配置"),
+            ("groups/batch", self.batch_groups, ["POST"], "批量保存群审核配置"),
+            ("requests", self.requests, ["GET"], "读取入群待审申请"),
+            ("approve", self.approve, ["POST"], "批准入群申请"),
+            ("reject", self.reject, ["POST"], "驳回入群申请"),
+        )
+        for suffix, handler, methods, description in routes:
+            register(f"{ROUTE_PREFIX}/{suffix}", handler, methods, description)
+        return True
+
+    @staticmethod
+    def _response(payload: dict[str, Any], status: int = 200) -> Any:
+        body = {"success": status < 400, **payload}
+        if callable(json_response):
+            return json_response(body, status_code=status)
+        return body if status == 200 else (body, status)
+
+    @classmethod
+    def _error(cls, code: str, status: int = 400) -> Any:
+        return cls._response({"error": code}, status)
+
+    @staticmethod
+    async def _payload() -> dict[str, Any] | None:
+        if request is None:
+            return None
+        try:
+            value = await request.json(default={})
+        except Exception:
+            return None
+        return value if isinstance(value, dict) else None
+
+    async def _discovered(self) -> list[JoinedGroup]:
+        return await discover_joined_groups(self.context, self.runtime.onebot)
+
+    @staticmethod
+    def _discovery_map(
+        groups: list[JoinedGroup],
+    ) -> dict[tuple[str, str], JoinedGroup]:
+        return {(item.platform_id, item.group_id): item for item in groups}
+
+    async def _validate_config_scope(
+        self, payload: Mapping[str, Any], discovered: list[JoinedGroup]
+    ) -> None:
+        platform_id = str(payload.get("platform_id") or "").strip()
+        group_id = str(payload.get("group_id") or "").strip()
+        rows = self._discovery_map(discovered)
+        source = rows.get((platform_id, group_id))
+        if source is None:
+            raise ValidationError("group_not_joined")
+        if not source.can_review:
+            raise ValidationError("insufficient_permission")
+        specified = payload.get("specified_group_ids", ())
+        if not isinstance(specified, (list, tuple)):
+            raise ValidationError("invalid_specified_group_ids")
+        for target_group_id in specified:
+            if (platform_id, str(target_group_id).strip()) not in rows:
+                raise ValidationError("specified_group_not_joined")
+
+    async def joined_groups(self) -> Any:
+        try:
+            groups = [item.to_dict() for item in await self._discovered()]
+            return self._response({"data": {"groups": groups}})
+        except Exception as exc:
+            self.logger.warning(
+                "[idg] join-review discovery failed: %s", type(exc).__name__
+            )
+            return self._error("group_discovery_failed", 502)
+
+    def _legacy_available(self) -> bool:
+        return str(getattr(self.config, "join_audit_mode", "off")) in {
+            "approve_only",
+            "notify_only",
+        }
+
+    async def groups(self) -> Any:
+        configs = await self.store.list_group_configs()
+        actionable = await self.store.list_requests(
+            status=("pending", "platform_error")
+        )
+        counts: dict[tuple[str, str], int] = {}
+        for item in actionable:
+            key = (item.platform_id, item.group_id)
+            counts[key] = counts.get(key, 0) + 1
+        rows = []
+        for config in configs:
+            value = config.to_dict()
+            value["pending_count"] = counts.get(
+                (config.platform_id, config.group_id), 0
+            )
+            rows.append(value)
+        return self._response(
+            {
+                "data": {
+                    "groups": rows,
+                    "legacy_available": self._legacy_available(),
+                }
+            }
+        )
+
+    async def update_group(self) -> Any:
+        payload = await self._payload()
+        if payload is None:
+            return self._error("invalid_request")
+        allowed = {
+            "platform_id",
+            "group_id",
+            "auto_audit_enabled",
+            "review_send_enabled",
+            "notify_target",
+            "specified_group_ids",
+            "include_answer",
+        }
+        if set(payload) != allowed:
+            return self._error("invalid_group_config")
+        try:
+            await self._validate_config_scope(payload, await self._discovered())
+            config = await self.store.upsert_group_config(**payload)
+        except ValidationError as exc:
+            return self._error(str(exc))
+        except Exception as exc:
+            self.logger.warning(
+                "[idg] join-review group update failed: %s", type(exc).__name__
+            )
+            return self._error("config_persist_failed", 500)
+        return self._response({"data": {"group": config.to_dict()}})
+
+    async def batch_groups(self) -> Any:
+        payload = await self._payload()
+        if payload is None or set(payload) != {"action", "groups"}:
+            return self._error("invalid_request")
+        action = payload.get("action")
+        selected = payload.get("groups")
+        if action not in _BATCH_ACTIONS or not isinstance(selected, list):
+            return self._error("invalid_batch")
+        if not selected or len(selected) > 100:
+            return self._error("invalid_batch")
+        discovered = await self._discovered()
+        seen: set[tuple[str, str]] = set()
+        updates: list[dict[str, Any]] = []
+        try:
+            for selected_group in selected:
+                if not isinstance(selected_group, dict) or set(selected_group) != {
+                    "platform_id",
+                    "group_id",
+                }:
+                    raise ValidationError("invalid_group_selection")
+                platform_id = str(selected_group["platform_id"]).strip()
+                group_id = str(selected_group["group_id"]).strip()
+                key = (platform_id, group_id)
+                if key in seen:
+                    raise ValidationError("duplicate_group_config")
+                seen.add(key)
+                await self._validate_config_scope(selected_group, discovered)
+                current = await self.store.get_group_config(platform_id, group_id)
+                auto_enabled = current.auto_audit_enabled
+                review_enabled = current.review_send_enabled
+                if action == "add":
+                    auto_enabled = False
+                    review_enabled = False
+                elif action == "enable_auto_audit":
+                    auto_enabled = True
+                elif action == "enable_review_send":
+                    review_enabled = True
+                elif action == "disable_all":
+                    auto_enabled = False
+                    review_enabled = False
+                elif action == "apply_legacy":
+                    mode = str(getattr(self.config, "join_audit_mode", "off"))
+                    auto_enabled = mode == "approve_only"
+                    review_enabled = mode == "notify_only"
+                updates.append(
+                    {
+                        "platform_id": platform_id,
+                        "group_id": group_id,
+                        "auto_audit_enabled": auto_enabled,
+                        "review_send_enabled": review_enabled,
+                        "notify_target": current.notify_target,
+                        "specified_group_ids": list(current.specified_group_ids),
+                        "include_answer": current.include_answer,
+                    }
+                )
+            configs = await self.store.batch_upsert_group_configs(updates)
+        except ValidationError as exc:
+            return self._error(str(exc))
+        except Exception as exc:
+            self.logger.warning(
+                "[idg] join-review batch update failed: %s", type(exc).__name__
+            )
+            return self._error("config_persist_failed", 500)
+        return self._response(
+            {"data": {"groups": [item.to_dict() for item in configs]}}
+        )
+
+    async def requests(self) -> Any:
+        rows = []
+        for item in await self.store.list_requests():
+            config = await self.store.get_group_config(item.platform_id, item.group_id)
+            rows.append(item.to_public_dict(include_answer=config.include_answer))
+        return self._response({"data": {"requests": rows}})
+
+    async def _process(self, *, approve: bool) -> Any:
+        payload = await self._payload()
+        allowed = {"request_id"} if approve else {"request_id", "reason"}
+        if (
+            payload is None
+            or not set(payload) <= allowed
+            or "request_id" not in payload
+        ):
+            return self._error("invalid_request")
+        reason = str(payload.get("reason") or "").strip()
+        if len(reason) > 256:
+            return self._error("reason_too_long")
+        try:
+            updated = await self.runtime.process_request(
+                self.context,
+                str(payload["request_id"]),
+                approve=approve,
+                reason=reason,
+            )
+        except RequestNotActionable as exc:
+            status = 409 if exc.reason in {"busy", "already_processed"} else 410
+            return self._error(exc.reason, status)
+        except ValidationError as exc:
+            return self._error(str(exc))
+        except Exception as exc:
+            self.logger.warning(
+                "[idg] join-review action failed: %s", type(exc).__name__
+            )
+            return self._error("platform_error", 502)
+        if updated.status == "platform_error":
+            return self._error("platform_error", 502)
+        config = await self.store.get_group_config(
+            updated.platform_id, updated.group_id
+        )
+        return self._response(
+            {
+                "data": {
+                    "request": updated.to_public_dict(
+                        include_answer=config.include_answer
+                    )
+                }
+            }
+        )
+
+    async def approve(self) -> Any:
+        return await self._process(approve=True)
+
+    async def reject(self) -> Any:
+        return await self._process(approve=False)
+
+
+__all__ = ["JoinReviewPageAPI", "ROUTE_PREFIX"]

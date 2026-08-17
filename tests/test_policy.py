@@ -333,11 +333,11 @@ def test_notify_only_blocks_join_approval_tool():
     )
 
     assert decision.allowed is False
-    assert "模式" in decision.reason
+    assert "未知能力" in decision.reason
 
 
-def test_approve_only_allows_join_approval_tool_for_friendly_requester():
-    """approve_only 下保留已有的授权检查与工具能力。"""
+def test_approve_only_does_not_restore_legacy_flag_tool():
+    """旧全局模式不能重新开放接受 flag 的 LLM 工具。"""
     engine = PolicyEngine(_make_config(join_audit_mode="approve_only"))
     actor = _make_actor(
         requester_id="100",
@@ -352,7 +352,8 @@ def test_approve_only_allows_join_approval_tool_for_friendly_requester():
         TriggerSource.JOIN_AUDIT.value,
     )
 
-    assert decision.allowed is True
+    assert decision.allowed is False
+    assert "未知能力" in decision.reason
 
 
 # ------------------------------------------------------------------

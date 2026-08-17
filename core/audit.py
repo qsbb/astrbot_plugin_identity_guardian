@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
 try:
@@ -20,6 +21,26 @@ from .knowledge import KnowledgeService
 from .models import JoinDecision, JoinVerdict
 from .onebot import OneBotClient
 from .prompts import build_answer_judge_prompt
+
+MAX_JOIN_TEXT_LENGTH = 2048
+MAX_JOIN_FLAG_LENGTH = 4096
+
+
+def _bounded_join_text(value: Any, maximum: int) -> str:
+    """Bound event-controlled text before it reaches prompts or logs."""
+    if value is None:
+        return ""
+    return str(value).strip()[:maximum]
+
+
+@dataclass(frozen=True, slots=True)
+class AutoAuditResult:
+    """Outcome of automatic auditing, including the platform side effect."""
+
+    decision: JoinDecision
+    approval_attempted: bool = False
+    platform_approved: bool = False
+    platform_error: str = ""
 
 
 class JoinAuditService:
@@ -43,12 +64,12 @@ class JoinAuditService:
         Returns:
             (flag, sub_type, user_id, group_id, comment)
         """
-        flag = str(raw.get("flag", ""))
-        sub_type = str(raw.get("sub_type", "add"))
+        flag = _bounded_join_text(raw.get("flag", ""), MAX_JOIN_FLAG_LENGTH)
+        sub_type = _bounded_join_text(raw.get("sub_type", "add"), 32)
         user_id = str(raw.get("user_id", ""))
         group_id = str(raw.get("group_id", ""))
 
-        comment = str(raw.get("comment", ""))
+        comment = _bounded_join_text(raw.get("comment", ""), MAX_JOIN_TEXT_LENGTH)
 
         # 尝试从 comment 中提取答案
         # QQ 入群附言通常格式: "问题：xxx\n答案：yyy" 或纯答案
@@ -63,8 +84,13 @@ class JoinAuditService:
 
     def extract_question(self, comment: str) -> str:
         """从 comment 中提取问题文本。"""
+        comment = _bounded_join_text(comment, MAX_JOIN_TEXT_LENGTH)
         q_match = re.search(r"问题[：:]\s*(.+?)(?:\n|$)", comment)
-        return q_match.group(1).strip() if q_match else ""
+        return (
+            _bounded_join_text(q_match.group(1), MAX_JOIN_TEXT_LENGTH)
+            if q_match
+            else ""
+        )
 
     async def judge_answer(
         self,
@@ -120,11 +146,11 @@ class JoinAuditService:
                 llm_result = await self._llm_caller(prompt)
                 return self._parse_llm_judgment(llm_result)
             except Exception as exc:
-                logger.warning("[idg] join audit LLM failed: %s", exc)
+                logger.warning("[idg] join audit LLM failed: %s", type(exc).__name__)
                 return JoinDecision(
                     verdict=JoinVerdict.UNCERTAIN.value,
                     confidence=0.0,
-                    reason=f"LLM 判断失败: {exc}",
+                    reason="LLM 判断失败",
                 )
 
         # 3. 无法判断
@@ -212,10 +238,80 @@ class JoinAuditService:
 
     def should_auto_approve(self, decision: JoinDecision) -> bool:
         """仅 ``approve_only`` 模式允许高置信度正确答案自动通过。"""
+        return self.config.join_audit_mode == "approve_only" and self.is_approvable(
+            decision
+        )
+
+    def is_approvable(self, decision: JoinDecision) -> bool:
+        """Return whether a decision meets the configured approval threshold.
+
+        Unlike :meth:`should_auto_approve`, this predicate is independent of
+        the legacy global mode and is therefore suitable for per-group review.
+        """
         return (
-            self.config.join_audit_mode == "approve_only"
-            and decision.verdict == JoinVerdict.CORRECT.value
+            decision.verdict == JoinVerdict.CORRECT.value
             and decision.confidence >= self.config.join_approve_threshold
+        )
+
+    async def execute_auto_audit(
+        self,
+        event: Any,
+        raw: dict[str, Any],
+    ) -> AutoAuditResult:
+        """Judge and, when eligible, attempt approval without ever rejecting."""
+        flag, sub_type, user_id, group_id, answer = self.parse_request(raw)
+        question = self.extract_question(str(raw.get("comment", "")))
+
+        evidence: list[Any] = []
+        if self.config.enable_active_learner_recall:
+            try:
+                evidence = await self.knowledge.recall_safe(
+                    query=f"{question}\n{answer}", scope=group_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[idg] join audit knowledge recall failed: %s",
+                    type(exc).__name__,
+                )
+                decision = JoinDecision(
+                    verdict=JoinVerdict.UNAVAILABLE.value,
+                    confidence=0.0,
+                    reason="知识联动失败",
+                )
+                return AutoAuditResult(
+                    decision=decision, platform_error="knowledge_error"
+                )
+
+        decision = await self.judge_answer(
+            question=question,
+            answer=answer,
+            configured_questions=self.config.join_questions,
+            evidence=evidence,
+        )
+        if not self.is_approvable(decision):
+            return AutoAuditResult(decision=decision)
+
+        ok, err = await self.onebot.set_group_add_request(
+            event, flag, sub_type, approve=True, reason=""
+        )
+        if ok:
+            logger.info(
+                "[idg] join request approved: user=%s group=%s confidence=%.2f",
+                user_id,
+                group_id,
+                decision.confidence,
+            )
+            return AutoAuditResult(
+                decision=decision,
+                approval_attempted=True,
+                platform_approved=True,
+            )
+        logger.warning("[idg] join request approve failed: %s", err)
+        return AutoAuditResult(
+            decision=decision,
+            approval_attempted=True,
+            platform_approved=False,
+            platform_error=err or "platform_approval_failed",
         )
 
     async def handle_request(
@@ -227,38 +323,19 @@ class JoinAuditService:
 
         仅高置信度正确时自动通过，其他情况不处理。
         """
-        flag, sub_type, user_id, group_id, answer = self.parse_request(raw)
+        _, _, user_id, group_id, answer = self.parse_request(raw)
         question = self.extract_question(str(raw.get("comment", "")))
-
-        # 获取知识库证据
-        evidence: list[Any] = []
-        if self.config.enable_active_learner_recall:
-            evidence = await self.knowledge.recall_safe(
-                query=f"{question}\n{answer}", scope=group_id
-            )
-
-        decision = await self.judge_answer(
-            question=question,
-            answer=answer,
-            configured_questions=self.config.join_questions,
-            evidence=evidence,
-        )
-
-        # notify_only 只做判断和通知，绝不能触发 OneBot 放行接口。
-        if self.should_auto_approve(decision):
-            ok, err = await self.onebot.set_group_add_request(
-                event, flag, sub_type, approve=True, reason=""
-            )
-            if ok:
-                logger.info(
-                    "[idg] join request approved: user=%s group=%s confidence=%.2f",
-                    user_id,
-                    group_id,
-                    decision.confidence,
-                )
-            else:
-                logger.warning("[idg] join request approve failed: %s", err)
+        if self.config.join_audit_mode == "approve_only":
+            result = await self.execute_auto_audit(event, raw)
+            decision = result.decision
         else:
+            decision = await self.judge_answer(
+                question=question,
+                answer=answer,
+                configured_questions=self.config.join_questions,
+            )
+
+        if not self.should_auto_approve(decision):
             logger.info(
                 "[idg] join request not processed (verdict=%s confidence=%.2f): "
                 "user=%s group=%s — left for manual review",
@@ -269,3 +346,6 @@ class JoinAuditService:
             )
 
         return decision
+
+
+__all__ = ["AutoAuditResult", "JoinAuditService"]

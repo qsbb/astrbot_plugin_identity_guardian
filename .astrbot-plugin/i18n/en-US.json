@@ -1,0 +1,8 @@
+{
+  "pages": {
+    "join_review": {
+      "title": "Join Review",
+      "description": "Configure automatic and manual join-request review per bot and group"
+    }
+  }
+}

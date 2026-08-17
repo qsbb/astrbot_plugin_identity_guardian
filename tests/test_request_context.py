@@ -34,9 +34,7 @@ class Event:
 
 def test_contract_identity_and_lazy_reuse():
     event = Event()
-    first = request_context.ensure_context(
-        event, request_context.PHASE_LLM_REQUEST
-    )
+    first = request_context.ensure_context(event, request_context.PHASE_LLM_REQUEST)
     second = request_context.ensure_context(
         event, request_context.PHASE_DECORATING_RESULT
     )
@@ -113,7 +111,6 @@ def test_invalid_existing_context_is_rebuilt_without_leaking_old_data():
     assert rebuilt["version"] == request_context.REQUEST_CONTEXT_VERSION
     assert rebuilt["request_id"] != "stale"
     assert rebuilt["flags"] == {}
-
 
 
 def test_prompt_fragments_are_sorted_replaced_and_deduplicated():

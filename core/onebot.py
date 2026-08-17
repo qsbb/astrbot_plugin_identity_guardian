@@ -18,7 +18,6 @@ _DIAG_KEYS = (
     "group_id",
     "user_id",
     "message_id",
-    "flag",
     "sub_type",
     "enable",
     "approve",
@@ -76,11 +75,25 @@ class OneBotClient:
         if bot is None:
             logger.warning("[idg] no bot available for action %s", action)
             return None
+        return await self.call_bot(bot, action, **params)
+
+    async def call_bot(self, bot: Any, action: str, **params: Any) -> Any:
+        """Call a OneBot action through a public ``bot.call_action`` object.
+
+        Dashboard requests do not have an ``AstrMessageEvent``. AstrBot's
+        platform adapter exposes its client through ``platform.get_client()``;
+        accepting that returned object keeps Page operations on the same checked
+        wrapper as event-driven calls.
+        """
+        call_action = getattr(bot, "call_action", None)
+        if not callable(call_action):
+            logger.warning("[idg] invalid bot for action %s", action)
+            return None
         # 查询类动作失败时上层有 fallback，降级为 debug 避免刷屏
         is_query = action.startswith("get_") or action in ("get_login_info",)
         try:
             resp = await asyncio.wait_for(
-                bot.call_action(action, **params), timeout=self.timeout
+                call_action(action, **params), timeout=self.timeout
             )
             # 兼容分支：少数适配器返回未拆包的完整响应信封。
             # 仅当同时含 status 与 retcode 时才认定为信封，避免把恰好带
@@ -107,13 +120,86 @@ class OneBotClient:
             return None
         except Exception as exc:
             log = logger.debug if is_query else logger.warning
+            description = (
+                type(exc).__name__
+                if action == "set_group_add_request"
+                else _describe_exc(exc)
+            )
             log(
                 "[idg] action %s error: %s | params=%s",
                 action,
-                _describe_exc(exc),
+                description,
                 _safe_params(params),
             )
             return None
+
+    async def get_group_list(self, target: Any) -> list[dict[str, Any]] | None:
+        """Return groups joined by the Bot represented by an event or bot."""
+        result = await self._call_target(target, "get_group_list")
+        if not isinstance(result, list):
+            return None
+        return [item for item in result if isinstance(item, dict)]
+
+    async def get_login_info(self, target: Any) -> dict[str, Any] | None:
+        """Return the active OneBot account identity."""
+        result = await self._call_target(target, "get_login_info")
+        return result if isinstance(result, dict) else None
+
+    async def _call_target(self, target: Any, action: str, **params: Any) -> Any:
+        if callable(getattr(target, "call_action", None)):
+            return await self.call_bot(target, action, **params)
+        return await self.call(target, action, **params)
+
+    async def get_group_member_info_for_bot(
+        self, bot: Any, group_id: int, user_id: int, no_cache: bool = False
+    ) -> dict[str, Any] | None:
+        result = await self.call_bot(
+            bot,
+            "get_group_member_info",
+            group_id=group_id,
+            user_id=user_id,
+            no_cache=no_cache,
+        )
+        return result if isinstance(result, dict) else None
+
+    async def get_group_info_for_bot(
+        self, bot: Any, group_id: int, no_cache: bool = False
+    ) -> dict[str, Any] | None:
+        result = await self.call_bot(
+            bot, "get_group_info", group_id=group_id, no_cache=no_cache
+        )
+        return result if isinstance(result, dict) else None
+
+    async def send_group_message(
+        self, target: Any, group_id: int, message: str
+    ) -> tuple[bool, str]:
+        """Send plain text to a group through an event or runtime Bot."""
+        result = await self._call_target(
+            target, "send_group_msg", group_id=group_id, message=message
+        )
+        if result is not None:
+            return True, ""
+        return False, "send_group_msg failed"
+
+    async def set_group_add_request_for_bot(
+        self,
+        bot: Any,
+        flag: str,
+        sub_type: str,
+        approve: bool,
+        reason: str = "",
+    ) -> tuple[bool, str]:
+        result = await self.call_bot(
+            bot,
+            "set_group_add_request",
+            flag=flag,
+            sub_type=sub_type,
+            approve=approve,
+            reason=reason,
+        )
+        if result is not None:
+            return True, ""
+        return False, "set_group_add_request failed"
 
     async def get_group_member_info(
         self, event: Any, group_id: int, user_id: int, no_cache: bool = False

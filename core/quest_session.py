@@ -75,7 +75,9 @@ def authorize(config: Config, request: object) -> dict[str, object]:
     if isinstance(group_id, str) and group_id != "":
         return decision("denied", "private_session_required")
 
-    legacy_binding = _BINDING_SEPARATOR.join(values[field] for field in _IDENTITY_FIELDS)
+    legacy_binding = _BINDING_SEPARATOR.join(
+        values[field] for field in _IDENTITY_FIELDS
+    )
     digest_binding = _BINDING_SEPARATOR.join(
         (
             principal_digest(values["api_principal"]),
@@ -89,15 +91,18 @@ def authorize(config: Config, request: object) -> dict[str, object]:
         candidate in config.quest_session_owner_bindings
         for candidate in (digest_binding, legacy_binding)
     )
-    read_only_binding_matches = read_only_binding_record(
-        {
-            "api_principal_digest": principal_digest(values["api_principal"]),
-            "client_id": values["client_id"],
-            "platform_id": values["platform_id"],
-            "bot_id": values["bot_id"],
-            "user_id": values["user_id"],
-        }
-    ) in config.quest_session_read_only_bindings
+    read_only_binding_matches = (
+        read_only_binding_record(
+            {
+                "api_principal_digest": principal_digest(values["api_principal"]),
+                "client_id": values["client_id"],
+                "platform_id": values["platform_id"],
+                "bot_id": values["bot_id"],
+                "user_id": values["user_id"],
+            }
+        )
+        in config.quest_session_read_only_bindings
+    )
     if owner_binding_matches:
         if not config.is_owner(values["user_id"]):
             return decision("denied", "owner_not_configured")

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>序 · 入群审核</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="page-header">
+      <div>
+        <p class="series-name">凝心溯溪 · 序</p>
+        <h1>入群审核</h1>
+        <p class="subtitle">按 Bot 与群分别管理自动审核和人工审核通知。</p>
+      </div>
+      <button id="refresh-joined" class="button secondary" type="button">
+        <span aria-hidden="true">↻</span> 刷新已加入群
+      </button>
+    </header>
+
+    <div id="page-error" class="notice error hidden" role="alert"></div>
+    <div id="page-status" class="notice success hidden" role="status"></div>
+
+    <section id="legacy-notice" class="legacy-notice hidden" aria-labelledby="legacy-title">
+      <div>
+        <h2 id="legacy-title">检测到旧版全局审核配置</h2>
+        <p>旧配置不会自动启用。请勾选要迁移的群，再明确应用。</p>
+      </div>
+      <button id="apply-legacy" class="button secondary" type="button">应用旧配置到所选群</button>
+    </section>
+
+    <section class="workspace-section" aria-labelledby="groups-title">
+      <div class="section-heading">
+        <div>
+          <h2 id="groups-title">群配置</h2>
+          <p id="group-summary" class="muted">正在读取群列表…</p>
+        </div>
+      </div>
+
+      <div class="batch-toolbar" aria-label="批量配置操作">
+        <label class="select-all-label">
+          <input id="select-all" type="checkbox">
+          <span>全选</span>
+        </label>
+        <span id="selected-count" class="selected-count">已选择 0 个群</span>
+        <div class="batch-actions">
+          <button class="button compact" type="button" data-batch-action="add">添加配置</button>
+          <button class="button compact" type="button" data-batch-action="enable_auto_audit">开启自动审核</button>
+          <button class="button compact" type="button" data-batch-action="enable_review_send">开启发送审核</button>
+          <button class="button compact danger-quiet" type="button" data-batch-action="disable_all">全部关闭</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table groups-table">
+          <thead>
+            <tr>
+              <th class="select-column"><span class="sr-only">选择</span></th>
+              <th>群</th>
+              <th>Bot / 权限</th>
+              <th>配置</th>
+              <th>自动审核</th>
+              <th>发送审核</th>
+              <th>通知位置</th>
+              <th>指定审核群白名单</th>
+              <th>显示答案</th>
+              <th>待审</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="groups-body">
+            <tr class="empty-row"><td colspan="11">正在加载…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="workspace-section" aria-labelledby="requests-title">
+      <div class="section-heading request-heading">
+        <div>
+          <h2 id="requests-title">待审申请</h2>
+          <p id="request-summary" class="muted">正在读取申请…</p>
+        </div>
+        <button id="refresh-requests" class="button secondary compact" type="button">
+          <span aria-hidden="true">↻</span> 刷新申请
+        </button>
+      </div>
+      <div id="requests-list" class="request-list" aria-live="polite">
+        <p class="empty-state">正在加载…</p>
+      </div>
+    </section>
+  </div>
+
+  <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
