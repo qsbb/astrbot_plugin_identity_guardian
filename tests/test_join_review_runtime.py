@@ -10,7 +10,7 @@ import pytest
 from core.audit import AutoAuditResult
 from core.group_discovery import discover_joined_groups
 from core.join_notification import JoinNotificationService
-from core.join_review import JoinReviewRuntime, parse_join_request
+from core.join_review import GuardBlockedError, JoinReviewRuntime, parse_join_request
 from core.join_review_store import JoinReviewStore
 from core.models import JoinDecision
 from core.onebot import OneBotClient
@@ -295,3 +295,49 @@ def test_manual_action_uses_stored_flag_and_commits_after_platform_success(tmp_p
     action = next(item for item in bot.calls if item[0] == "set_group_add_request")
     assert action[1]["flag"] == "internal-platform-flag"
     assert action[1]["approve"] is False
+
+
+def test_process_request_rejected_when_guard_blocks(tmp_path):
+    """紧急停止/熔断护栏生效时，Page 审批在入口被拒绝且不触碰平台。"""
+    bot = Bot()
+    onebot = OneBotClient()
+    store = JoinReviewStore(tmp_path)
+    audit = Audit(audit_result())
+    runtime = JoinReviewRuntime(audit, onebot, store, guard=lambda: False)
+    request = run(runtime._store_request(parse_join_request(Event(bot), raw_request())))
+
+    with pytest.raises(GuardBlockedError):
+        run(
+            runtime.process_request(SimpleNamespace(), request.request_id, approve=True)
+        )
+
+    assert run(store.get_request(request.request_id)).status == "pending"
+    assert not any(action == "set_group_add_request" for action, _ in bot.calls)
+
+
+def test_process_request_runs_when_guard_allows(tmp_path):
+    """护栏通过时正常审批，确认 guard 回调确实被消费。"""
+    bot = Bot()
+    onebot = OneBotClient()
+    store = JoinReviewStore(tmp_path)
+    audit = Audit(audit_result())
+    calls = []
+    runtime = JoinReviewRuntime(
+        audit, onebot, store, guard=lambda: calls.append("check") or True
+    )
+    request = run(runtime._store_request(parse_join_request(Event(bot), raw_request())))
+    platform = SimpleNamespace(
+        get_client=lambda: bot,
+        meta=lambda: SimpleNamespace(id="qq-main", name="aiocqhttp"),
+    )
+    context = SimpleNamespace(
+        get_platform_inst=lambda platform_id: (
+            platform if platform_id == "qq-main" else None
+        ),
+        platform_manager=SimpleNamespace(get_insts=lambda: [platform]),
+    )
+
+    updated = run(runtime.process_request(context, request.request_id, approve=True))
+
+    assert calls == ["check"]
+    assert updated.status == "approved"

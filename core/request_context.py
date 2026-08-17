@@ -69,7 +69,6 @@ MAX_PROMPT_FRAGMENTS_PER_OWNER = 16
 MAX_PROMPT_FRAGMENT_CHARS = 24000
 PROMPT_FRAGMENTS_ARTIFACT = "prompt_fragments"
 
-
 class RequestContextError(RuntimeError):
     """上下文契约被违反（越界写入、非法值、phase 回退等）。"""
 
@@ -116,9 +115,7 @@ def new_request_id() -> str:
     return uuid.uuid4().hex
 
 
-def new_context(
-    request_id: str | None = None, phase: str = PHASE_CREATED
-) -> dict[str, Any]:
+def new_context(request_id: str | None = None, phase: str = PHASE_CREATED) -> dict[str, Any]:
     """构造一个空骨架（不绑定 event），供惰性创建与测试使用。"""
     if phase not in PHASE_ORDER:
         raise RequestContextError(f"unknown phase: {phase!r}")
@@ -228,9 +225,7 @@ def set_flag(context: dict[str, Any], owner: str, name: str, value: Any) -> None
     _owner_section(context, "flags", owner)[name] = value
 
 
-def get_flag(
-    context: dict[str, Any], owner: str, name: str, default: Any = None
-) -> Any:
+def get_flag(context: dict[str, Any], owner: str, name: str, default: Any = None) -> Any:
     """读取任意 owner 的 flag（跨插件只读是允许的）。"""
     bucket = context.get("flags")
     if not isinstance(bucket, dict):
@@ -446,9 +441,7 @@ def get_reasons(context: dict[str, Any], owner: str) -> list[str]:
     return list(reasons) if isinstance(reasons, list) else []
 
 
-def note(
-    event: Any, owner: str, reason: str, phase: str | None = None
-) -> dict[str, Any]:
+def note(event: Any, owner: str, reason: str, phase: str | None = None) -> dict[str, Any]:
     """一行式便捷入口：惰性建上下文 + 推进 phase + 记一个原因码。"""
     context = ensure_context(event, phase)
     add_reason(context, owner, reason)

@@ -438,3 +438,151 @@ def test_notify_only_notifies_even_when_answer_is_correct():
 
 async def _collect_async_generator(generator):
     return [item async for item in generator]
+
+
+# ----------------------------------------------------- S2 管理员变更事件
+
+
+@pytest.mark.parametrize("sub_type", ["set", "unset"])
+def test_group_admin_notice_clears_identity_cache(sub_type):
+    """OneBot V11 管理员变更事件是 notice_type=group_admin（set/unset）。"""
+    plugin = plugin_instance()
+    cleared = []
+    plugin.identity = SimpleNamespace(clear_cache=lambda: cleared.append("clear"))
+    plugin.logger = SimpleNamespace(
+        info=lambda *a, **k: None, debug=lambda *a, **k: None
+    )
+    raw = {
+        "notice_type": "group_admin",
+        "sub_type": sub_type,
+        "group_id": "100",
+        "user_id": "9",
+    }
+
+    asyncio.run(plugin._handle_notice(ApprovalEvent(), raw))
+
+    assert cleared == ["clear"]
+
+
+def test_legacy_notify_group_admin_change_still_clears_cache():
+    """旧的 notify/group_admin_change 匹配作为冗余兼容分支保留。"""
+    plugin = plugin_instance()
+    cleared = []
+    plugin.identity = SimpleNamespace(clear_cache=lambda: cleared.append("clear"))
+    plugin.logger = SimpleNamespace(
+        info=lambda *a, **k: None, debug=lambda *a, **k: None
+    )
+    raw = {
+        "notice_type": "notify",
+        "sub_type": "group_admin_change",
+        "group_id": "100",
+        "user_id": "9",
+    }
+
+    asyncio.run(plugin._handle_notice(ApprovalEvent(), raw))
+
+    assert cleared == ["clear"]
+
+
+# ----------------------------------------------------- S5 二次确认事务语义
+
+
+def _armed_approval_plugin():
+    """构造一个全部校验可通过、只剩平台执行待桩接的审批场景。"""
+    plugin = plugin_instance()
+    plugin.confirm = main.ConfirmService()
+    confirm_id = plugin.confirm.create("kick_member", {"user_id": "9"}, "100", "9")
+    plugin._stopped = False
+    plugin.config = SimpleNamespace(enable_api_guard=False)
+    plugin.cooldown = SimpleNamespace(check_breaker=lambda: False)
+
+    async def get_actor(event, target_id):
+        return SimpleNamespace(group_id="100")
+
+    plugin._get_actor = get_actor
+    plugin.policy = SimpleNamespace(
+        evaluate=lambda *args: main.ActionDecision(
+            allowed=True, action="kick_member", params={"user_id": "9"}
+        )
+    )
+    return plugin, confirm_id
+
+
+def test_confirm_claim_has_single_winner_and_release_allows_retry():
+    service = main.ConfirmService()
+    confirm_id = service.create("kick_member", {"user_id": "9"}, "100", "9")
+
+    first = service.claim(confirm_id)
+    second = service.claim(confirm_id)
+    assert first is not None
+    assert second is None
+
+    # 失败释放后可再次占位；成功 finish 后记录删除、不可再占位。
+    assert service.release(confirm_id) is not None
+    assert service.get(confirm_id).status == "pending"
+    assert service.claim(confirm_id) is not None
+    assert service.finish(confirm_id) is not None
+    assert service.get(confirm_id) is None
+    assert service.claim(confirm_id) is None
+
+    # 占位中的条目仍可被拒绝（管理员明确撤销）。
+    third = service.create("kick_member", {"user_id": "9"}, "100", "9")
+    assert service.claim(third) is not None
+    assert service.reject(third) is not None
+    assert service.get(third) is None
+
+
+def test_approval_failure_releases_entry_and_reports_real_reason():
+    """平台失败后不再显示「已批准」，确认单保留可重试。"""
+    plugin, confirm_id = _armed_approval_plugin()
+
+    async def failing_execute(event, decision, target_id):
+        return "执行失败：OneBot 连接超时", False
+
+    plugin._execute_action_result = failing_execute
+
+    result = asyncio.run(plugin._approve_pending_action(ApprovalEvent(), confirm_id))
+
+    assert "已批准" not in result
+    assert "执行失败：OneBot 连接超时" in result
+    entry = plugin.confirm.get(confirm_id)
+    assert entry is not None
+    assert entry.status == "pending"
+
+    # 排除故障后重试成功，记录才被删除。
+    async def ok_execute(event, decision, target_id):
+        return "已执行 kick_member。", True
+
+    plugin._execute_action_result = ok_execute
+
+    retry = asyncio.run(plugin._approve_pending_action(ApprovalEvent(), confirm_id))
+
+    assert "已批准 kick_member" in retry
+    assert "已执行 kick_member" in retry
+    assert plugin.confirm.get(confirm_id) is None
+
+
+def test_concurrent_approval_executes_platform_action_only_once():
+    """并发审批同一确认单：claim 只有一个赢家，平台动作只执行一次。"""
+    plugin, confirm_id = _armed_approval_plugin()
+    executions = []
+
+    async def recording_execute(event, decision, target_id):
+        await asyncio.sleep(0)  # 让另一个协程有机会进入 claim 竞争
+        executions.append(decision.action)
+        return "已执行 kick_member。", True
+
+    plugin._execute_action_result = recording_execute
+
+    async def run_both():
+        return await asyncio.gather(
+            plugin._approve_pending_action(ApprovalEvent(), confirm_id),
+            plugin._approve_pending_action(ApprovalEvent(), confirm_id),
+        )
+
+    results = asyncio.run(run_both())
+
+    assert executions == ["kick_member"]
+    assert any("已批准 kick_member" in item for item in results)
+    assert any("已被处理" in item for item in results)
+    assert plugin.confirm.get(confirm_id) is None

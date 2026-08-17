@@ -1,0 +1,3 @@
+# core/request_context.py 是系列共享的字节一致副本（见 plugin/CONVENTIONS.md），
+# 由系列级测试锁定内容，不参与本仓库的 lint/format。
+extend-exclude = ["core/request_context.py"]

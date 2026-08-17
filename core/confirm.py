@@ -48,6 +48,35 @@ class ConfirmService:
         )
         return confirm_id
 
+    def claim(self, confirm_id: str) -> ConfirmEntry | None:
+        """原子占位待确认条目：并发下只有一个调用者能拿到条目。
+
+        已占位（claimed）或不存在的条目返回 None。占位后条目状态为
+        ``claimed``，平台执行成功应调用 :meth:`finish` 删除，失败应调用
+        :meth:`release` 放回 pending 以便重试。
+        """
+        entry = self._pending.get(confirm_id)
+        if entry is None or entry.status != "pending":
+            return None
+        entry.status = "claimed"
+        return entry
+
+    def finish(self, confirm_id: str) -> ConfirmEntry | None:
+        """平台执行成功后删除条目。条目已被清理（如 TTL 过期）时返回 None。"""
+        entry = self._pending.pop(confirm_id, None)
+        if entry is None:
+            return None
+        entry.status = "approved"
+        return entry
+
+    def release(self, confirm_id: str) -> ConfirmEntry | None:
+        """平台执行失败后将占位条目放回 pending，允许稍后重试。"""
+        entry = self._pending.get(confirm_id)
+        if entry is None or entry.status != "claimed":
+            return None
+        entry.status = "pending"
+        return entry
+
     def approve(self, confirm_id: str) -> ConfirmEntry | None:
         """批准待确认操作。"""
         entry = self._pending.get(confirm_id)

@@ -183,7 +183,11 @@ class IdentityGuardianPlugin(Star):
             ttl_seconds=self.config.pending_ttl_hours * 60 * 60,
         )
         self.join_review = JoinReviewRuntime(
-            self.join_audit, self.onebot, self.join_review_store
+            self.join_audit,
+            self.onebot,
+            self.join_review_store,
+            # Page 入群审批必须经过与消息路径一致的紧急停止/熔断护栏。
+            guard=self._check_guard,
         )
         self.join_review_page_api = JoinReviewPageAPI(
             context=self.context,
@@ -873,9 +877,21 @@ class IdentityGuardianPlugin(Star):
                     "%s bot left group %s, cache cleared", LOG_PREFIX, group_id
                 )
 
+        elif notice_type == "group_admin":
+            # OneBot V11 群管理员变更（sub_type: set/unset）：立即刷新身份缓存，
+            # 避免撤权后旧角色缓存存活至 TTL。
+            group_id = str(raw.get("group_id", ""))
+            self.identity.clear_cache()
+            self.logger.info(
+                "%s admin change in group %s, cache refreshed",
+                LOG_PREFIX,
+                group_id,
+            )
+
         elif notice_type == "notify":
             sub_type = raw.get("sub_type", "")
             if sub_type == "group_admin_change":
+                # 冗余兼容分支：部分实现以 notify/group_admin_change 上报
                 # 管理员变更：刷新身份缓存
                 group_id = str(raw.get("group_id", ""))
                 self.identity.clear_cache()
@@ -1033,7 +1049,7 @@ class IdentityGuardianPlugin(Star):
     async def _approve_pending_action(
         self, event: AstrMessageEvent, confirm_id: str
     ) -> str:
-        """在原群内重新授权并原子消费待确认操作。"""
+        """在原群内重新授权，占位后执行，按平台结果 finish/release 确认单。"""
         entry = self.confirm.get(confirm_id)
         if entry is None:
             return f"未找到确认 ID: {confirm_id}"
@@ -1056,9 +1072,9 @@ class IdentityGuardianPlugin(Star):
         if not decision.allowed:
             return f"审批时重新校验未通过：{decision.reason}。"
 
-        # 只有全部实时校验通过后才消费，避免校验失败导致确认记录丢失。
-        consumed = self.confirm.approve(confirm_id)
-        if consumed is None:
+        # 只有全部实时校验通过后才占位，避免校验失败导致确认记录丢失。
+        claimed = self.confirm.claim(confirm_id)
+        if claimed is None:
             return f"确认 ID 已被处理: {confirm_id}"
         executable = ActionDecision(
             allowed=True,
@@ -1066,8 +1082,17 @@ class IdentityGuardianPlugin(Star):
             params=decision.params,
             requires_confirmation=False,
         )
-        result = await self._execute_action(event, executable, entry.target_user)
-        return f"已批准 {entry.action}。\n{result}"
+        result, ok = await self._execute_action_result(
+            event, executable, entry.target_user
+        )
+        if ok:
+            self.confirm.finish(confirm_id)
+            return f"已批准 {entry.action}。\n{result}"
+        # 平台执行失败：释放占位，保留记录以便处理后重试。
+        self.confirm.release(confirm_id)
+        return (
+            f"批准执行失败：{result}\n确认单 {confirm_id} 已保留，可在排除故障后重试。"
+        )
 
     async def _execute_readonly(
         self,
@@ -1145,7 +1170,17 @@ class IdentityGuardianPlugin(Star):
         decision: ActionDecision,
         target_id: str | None,
     ) -> str:
-        """执行具体的 OneBot API 调用。"""
+        """执行具体的 OneBot API 调用，仅返回结果文案。"""
+        message, _ = await self._execute_action_result(event, decision, target_id)
+        return message
+
+    async def _execute_action_result(
+        self,
+        event: AstrMessageEvent,
+        decision: ActionDecision,
+        target_id: str | None,
+    ) -> tuple[str, bool]:
+        """执行具体的 OneBot API 调用，返回 ``(结果文案, 是否成功)``。"""
         action = decision.action
         params = decision.params
         group_id_str = event.get_group_id()
@@ -1153,7 +1188,7 @@ class IdentityGuardianPlugin(Star):
         try:
             group_id = int(group_id_str)
         except (ValueError, TypeError):
-            return "群 ID 无效。"
+            return "群 ID 无效。", False
 
         ok = False
         err = ""
@@ -1173,7 +1208,7 @@ class IdentityGuardianPlugin(Star):
         elif action == "mute_member":
             uid = int(params.get("user_id", 0))
             if uid <= 0:
-                return "目标用户 ID 无效。"
+                return "目标用户 ID 无效。", False
             ok, err = await self.onebot.set_group_ban(
                 event, group_id, uid, int(params.get("duration", 300))
             )
@@ -1181,13 +1216,13 @@ class IdentityGuardianPlugin(Star):
         elif action == "unmute_member":
             uid = int(params.get("user_id", 0))
             if uid <= 0:
-                return "目标用户 ID 无效。"
+                return "目标用户 ID 无效。", False
             ok, err = await self.onebot.set_group_ban(event, group_id, uid, 0)
 
         elif action == "kick_member":
             uid = int(params.get("user_id", 0))
             if uid <= 0:
-                return "目标用户 ID 无效。"
+                return "目标用户 ID 无效。", False
             ok, err = await self.onebot.set_group_kick(
                 event,
                 group_id,
@@ -1198,13 +1233,13 @@ class IdentityGuardianPlugin(Star):
         elif action == "delete_message":
             msg_id = int(params.get("message_id", 0))
             if msg_id <= 0:
-                return "消息 ID 无效。"
+                return "消息 ID 无效。", False
             ok, err = await self.onebot.delete_msg(event, msg_id)
 
         elif action == "set_member_card":
             uid = int(params.get("user_id", 0))
             if uid <= 0:
-                return "目标用户 ID 无效。"
+                return "目标用户 ID 无效。", False
             ok, err = await self.onebot.set_group_card(
                 event, group_id, uid, str(params.get("card", ""))
             )
@@ -1218,7 +1253,7 @@ class IdentityGuardianPlugin(Star):
         elif action == "set_member_title":
             uid = int(params.get("user_id", 0))
             if uid <= 0:
-                return "目标用户 ID 无效。"
+                return "目标用户 ID 无效。", False
             ok, err = await self.onebot.set_group_special_title(
                 event, group_id, uid, str(params.get("title", ""))
             )
@@ -1226,7 +1261,7 @@ class IdentityGuardianPlugin(Star):
         elif action == "set_group_admin":
             uid = int(params.get("user_id", 0))
             if uid <= 0:
-                return "目标用户 ID 无效。"
+                return "目标用户 ID 无效。", False
             ok, err = await self.onebot.set_group_admin(
                 event, group_id, uid, bool(params.get("enable", True))
             )
@@ -1242,7 +1277,7 @@ class IdentityGuardianPlugin(Star):
             )
 
         else:
-            return f"未实现的动作: {action}"
+            return f"未实现的动作: {action}", False
 
         # 记录冷却和审计
         self.cooldown.mark_action(
@@ -1254,8 +1289,8 @@ class IdentityGuardianPlugin(Star):
             self.audit_log.write_from_decision(actor, decision, ok, err)
 
         if ok:
-            return f"已执行 {action}。"
-        return f"执行失败：{err}"
+            return f"已执行 {action}。", True
+        return f"执行失败：{err}", False
 
     # --- 具体工具定义 ---
 

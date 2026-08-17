@@ -44,7 +44,7 @@ _DEFAULTS: dict[str, Any] = {
     "allow_playful_mute_protected": False,
     "playful_mute_max_seconds": 60,
     "max_mute_seconds": 1800,
-    "confirm_mute_threshold": 3600,
+    "confirm_mute_threshold": 600,
     "auto_confirm_threshold": "mute_short",
     "blacklist_users": [],
     "auto_moderate": False,
@@ -181,7 +181,7 @@ class Config:
 
     @property
     def confirm_mute_threshold(self) -> int:
-        return _parse_int(self._raw.get("confirm_mute_threshold"), 3600, minimum=0)
+        return _parse_int(self._raw.get("confirm_mute_threshold"), 600, minimum=0)
 
     @property
     def auto_confirm_threshold(self) -> str:

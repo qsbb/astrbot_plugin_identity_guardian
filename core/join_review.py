@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +23,10 @@ from .onebot import OneBotClient
 MAX_EVENT_TEXT = 2048
 MAX_NICKNAME = 128
 MAX_LEVEL = 64
+
+
+class GuardBlockedError(RuntimeError):
+    """紧急停止/熔断护栏拦截了入群申请处理。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,11 +119,14 @@ class JoinReviewRuntime:
         onebot: OneBotClient,
         store: JoinReviewStore,
         notification: JoinNotificationService | None = None,
+        guard: Callable[[], bool] | None = None,
     ) -> None:
         self.audit = audit
         self.onebot = onebot
         self.store = store
         self.notification = notification or JoinNotificationService(store, onebot)
+        # 紧急停止/熔断护栏谓词：返回 False 时拒绝处理入群申请。
+        self.guard = guard
 
     @staticmethod
     def _request_id(parsed: ParsedJoinRequest) -> str:
@@ -214,6 +222,8 @@ class JoinReviewRuntime:
         """Approve or reject once, after re-checking the Bot's current group role."""
         if not isinstance(approve, bool):
             raise ValidationError("invalid_approve")
+        if self.guard is not None and not self.guard():
+            raise GuardBlockedError("guard_blocked")
 
         async def platform_action(request: JoinRequest) -> tuple[bool, str]:
             bot = get_aiocqhttp_bot(context, request.platform_id)
@@ -238,6 +248,7 @@ class JoinReviewRuntime:
 
 
 __all__ = [
+    "GuardBlockedError",
     "JoinReviewResult",
     "JoinReviewRuntime",
     "ParsedJoinRequest",

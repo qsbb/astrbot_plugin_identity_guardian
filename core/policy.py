@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .capability import CAPABILITY_MAP, ROLE_LEVEL, capabilities_for_role
 from .config import Config
 from .models import ActionDecision, ActorContext
+
+logger = logging.getLogger(__name__)
 
 
 class PolicyEngine:
@@ -104,8 +107,15 @@ class PolicyEngine:
         # 4. 黑名单检查
         target = self._resolve_target(context, action, params)
         if target and self.config.is_blacklisted(target):
-            # 黑名单用户触发即踢
+            # 黑名单用户触发即踢，但强保护名单优先
             if action == "kick_member":
+                if self._is_protected(target, context.target_role or "member"):
+                    logger.warning("黑名单与保护名单冲突，保护优先: target=%s", target)
+                    return ActionDecision(
+                        allowed=False,
+                        action=action,
+                        reason="黑名单与保护名单冲突，保护优先，不可踢出",
+                    )
                 return ActionDecision(
                     allowed=True,
                     action="kick_member",
@@ -180,7 +190,7 @@ class PolicyEngine:
             )
 
         if action == "delete_message":
-            return self._check_delete_message(context, params)
+            return self._check_delete_message(context, params, is_friendly_requester)
 
         if action == "set_member_card":
             return self._check_set_card(
@@ -307,6 +317,12 @@ class PolicyEngine:
                 reason="普通成员不能请求禁言他人",
             )
         duration = int(params.get("duration", 0))
+        if duration <= 0:
+            return ActionDecision(
+                allowed=False,
+                action="mute_member",
+                reason="禁言时长必须大于0，解除禁言请使用 unmute_member",
+            )
         if duration > self.config.max_mute_seconds:
             duration = self.config.max_mute_seconds
         requires_confirm = duration > self.config.confirm_mute_threshold
@@ -371,9 +387,18 @@ class PolicyEngine:
         )
 
     def _check_delete_message(
-        self, context: ActorContext, params: dict[str, Any]
+        self,
+        context: ActorContext,
+        params: dict[str, Any],
+        is_friendly_requester: bool,
     ) -> ActionDecision:
         """检查 delete_message 授权。撤回是中风险操作。"""
+        if not is_friendly_requester:
+            return ActionDecision(
+                allowed=False,
+                action="delete_message",
+                reason="普通成员不能请求撤回消息",
+            )
         message_id = params.get("message_id")
         if not message_id:
             return ActionDecision(
@@ -427,14 +452,18 @@ class PolicyEngine:
             return ActionDecision(
                 allowed=False, action="set_member_title", reason="缺少目标用户"
             )
-        if self._is_protected(target, context.target_role or "member"):
-            if not is_friendly_requester:
-                return ActionDecision(
-                    allowed=False,
-                    action="set_member_title",
-                    reason="目标受保护且请求者非友好用户",
-                )
-        return ActionDecision(allowed=True, action="set_member_title", params=params)
+        if not is_friendly_requester:
+            return ActionDecision(
+                allowed=False,
+                action="set_member_title",
+                reason="普通成员不能请求设置头衔",
+            )
+        return ActionDecision(
+            allowed=True,
+            action="set_member_title",
+            params=params,
+            requires_confirmation=True,
+        )
 
     def _check_set_admin(
         self, context: ActorContext, params: dict[str, Any], target: str | None

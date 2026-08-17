@@ -616,3 +616,266 @@ def test_allowed_actions_member_bot():
     actions = engine.allowed_actions(actor)
     # 普通成员 bot 没有管理能力
     assert any("高风险操作不能仅因普通成员请求执行" in a for a in actions)
+
+
+# ------------------------------------------------------------------
+# delete_message 测试
+# ------------------------------------------------------------------
+
+
+def test_delete_message_by_normal_member():
+    """普通成员请求撤回消息 — 拒绝。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="999",
+        requester_role="member",
+        requester_relation="normal",
+    )
+    decision = engine.evaluate(
+        actor,
+        "delete_message",
+        {"message_id": 12345},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+    assert "普通成员" in decision.reason
+
+
+def test_delete_message_by_friendly():
+    """友好用户请求撤回消息 — 允许。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="friendly",
+    )
+    decision = engine.evaluate(
+        actor,
+        "delete_message",
+        {"message_id": 12345},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is True
+
+
+def test_delete_message_by_owner():
+    """主人请求撤回消息 — 允许。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="owner",
+    )
+    decision = engine.evaluate(
+        actor,
+        "delete_message",
+        {"message_id": 12345},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is True
+
+
+def test_delete_message_missing_id():
+    """缺少 message_id — 拒绝。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="owner",
+    )
+    decision = engine.evaluate(
+        actor,
+        "delete_message",
+        {},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+    assert "消息 ID" in decision.reason
+
+
+# ------------------------------------------------------------------
+# 黑名单与保护名单冲突测试
+# ------------------------------------------------------------------
+
+
+def test_blacklist_kick_protected_owner_conflict():
+    """黑名单与 owner 为同一 QQ，踢出 — 保护优先，拒绝。"""
+    cfg = _make_config(blacklist_users=["100"])
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="friendly",
+        target_id="100",
+        target_role="owner",
+    )
+    decision = engine.evaluate(
+        actor,
+        "kick_member",
+        {"user_id": "100"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+    assert "保护优先" in decision.reason
+
+
+def test_blacklist_kick_normal_member_still_allowed():
+    """黑名单中的普通成员仍可被自动踢出。"""
+    cfg = _make_config(blacklist_users=["888"])
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="friendly",
+        target_id="888",
+        target_role="member",
+    )
+    decision = engine.evaluate(
+        actor,
+        "kick_member",
+        {"user_id": "888"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is True
+    assert decision.params.get("reject_add_request") is True
+
+
+# ------------------------------------------------------------------
+# set_member_title 请求者校验测试
+# ------------------------------------------------------------------
+
+
+def test_set_title_by_normal_member_unprotected_target():
+    """普通成员请求给普通目标设头衔 — 拒绝。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        bot_role="owner",
+        requester_id="999",
+        requester_role="member",
+        requester_relation="normal",
+        target_id="888",
+        target_role="member",
+    )
+    decision = engine.evaluate(
+        actor,
+        "set_member_title",
+        {"user_id": "888", "title": "大佬"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+    assert "普通成员" in decision.reason
+
+
+def test_set_title_by_normal_member_protected_target():
+    """普通成员请求给受保护目标设头衔 — 拒绝。"""
+    cfg = _make_config(protected_users=["888"])
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        bot_role="owner",
+        requester_id="999",
+        requester_role="member",
+        requester_relation="normal",
+        target_id="888",
+        target_role="admin",
+    )
+    decision = engine.evaluate(
+        actor,
+        "set_member_title",
+        {"user_id": "888", "title": "大佬"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+
+
+def test_set_title_by_friendly_requires_confirmation():
+    """友好用户请求设头衔 — 允许但需人工确认。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        bot_role="owner",
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="friendly",
+        target_id="888",
+        target_role="member",
+    )
+    decision = engine.evaluate(
+        actor,
+        "set_member_title",
+        {"user_id": "888", "title": "大佬"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is True
+    assert decision.requires_confirmation is True
+
+
+# ------------------------------------------------------------------
+# mute_member 时长下限测试
+# ------------------------------------------------------------------
+
+
+def test_mute_member_zero_duration():
+    """禁言时长为 0 — 拒绝，提示使用 unmute_member。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="friendly",
+        target_id="888",
+        target_role="member",
+    )
+    decision = engine.evaluate(
+        actor,
+        "mute_member",
+        {"user_id": "888", "duration": 0},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+    assert "unmute_member" in decision.reason
+
+
+def test_mute_member_negative_duration():
+    """禁言时长为负数 — 拒绝。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="friendly",
+        target_id="888",
+        target_role="member",
+    )
+    decision = engine.evaluate(
+        actor,
+        "mute_member",
+        {"user_id": "888", "duration": -10},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+
+
+def test_mute_member_duration_clamped_to_max():
+    """禁言时长超过上限 — 自动截断为 max_mute_seconds。"""
+    cfg = _make_config(max_mute_seconds=600)
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="friendly",
+        target_id="888",
+        target_role="member",
+    )
+    decision = engine.evaluate(
+        actor,
+        "mute_member",
+        {"user_id": "888", "duration": 9999},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is True
+    assert decision.params["duration"] == 600

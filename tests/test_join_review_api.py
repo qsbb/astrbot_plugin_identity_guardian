@@ -232,3 +232,40 @@ def test_reject_route_rechecks_permission_and_commits_only_after_onebot_success(
     action = next(item for item in bot.calls if item[0] == "set_group_add_request")
     assert action[1]["approve"] is False
     assert action[1]["flag"] == "server-only-flag"
+
+
+def test_guard_blocked_returns_503_and_keeps_request_pending(tmp_path, monkeypatch):
+    """紧急停止/熔断护栏生效时，Page 审批返回 503 guard_blocked 且不落平台。"""
+    api, store, _, bot = make_api(tmp_path)
+    api.runtime = JoinReviewRuntime(
+        audit=SimpleNamespace(
+            execute_auto_audit=lambda *_args: AutoAuditResult(
+                JoinDecision("uncertain", 0.0, "")
+            )
+        ),
+        onebot=api.runtime.onebot,
+        store=store,
+        guard=lambda: False,
+    )
+    request = run(
+        store.add_request(
+            platform_id="qq-main",
+            group_id="100",
+            user_id="200",
+            answer="answer",
+            flag="server-only-flag",
+        )
+    )
+    monkeypatch.setattr(
+        api_module, "request", FakeRequest({"request_id": request.request_id})
+    )
+
+    value = run(api.approve())
+
+    status = value[1] if isinstance(value, tuple) else 200
+    body = response_data(value)
+    assert status == 503
+    assert body["success"] is False
+    assert body["error"] == "guard_blocked"
+    assert run(store.get_request(request.request_id)).status == "pending"
+    assert not any(action == "set_group_add_request" for action, _ in bot.calls)

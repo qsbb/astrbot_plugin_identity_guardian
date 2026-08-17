@@ -12,7 +12,7 @@ except ImportError:  # pragma: no cover - isolated unit tests mock AstrBot
     request = None
 
 from .group_discovery import JoinedGroup, discover_joined_groups
-from .join_review import JoinReviewRuntime
+from .join_review import GuardBlockedError, JoinReviewRuntime
 from .join_review_store import (
     JoinReviewStore,
     RequestNotActionable,
@@ -282,6 +282,9 @@ class JoinReviewPageAPI:
         except RequestNotActionable as exc:
             status = 409 if exc.reason in {"busy", "already_processed"} else 410
             return self._error(exc.reason, status)
+        except GuardBlockedError:
+            # 紧急停止/熔断护栏生效：前端尚无专属文案，使用通用错误体 + 503。
+            return self._error("guard_blocked", 503)
         except ValidationError as exc:
             return self._error(str(exc))
         except Exception as exc:
