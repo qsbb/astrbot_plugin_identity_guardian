@@ -34,6 +34,9 @@ MAX_LEVEL_LENGTH = 64
 MAX_FLAG_LENGTH = 4096
 MAX_ERROR_LENGTH = 512
 MAX_SPECIFIED_GROUPS = 100
+PUSH_STYLES = frozenset({"formatted", "natural"})
+MAX_PUSH_REFS = 200
+MAX_MESSAGE_ID_LENGTH = 64
 
 _DECIMAL_ID_RE = re.compile(r"^[1-9][0-9]{0,19}$")
 
@@ -118,6 +121,33 @@ def _normalize_timestamp(value: Any, field_name: str) -> float:
     return result
 
 
+def _normalize_push_refs(value: Any) -> tuple[dict[str, str], ...]:
+    """Validate push-message refs: iterable of {group_id, message_id} mappings."""
+    if isinstance(value, (str, bytes)):
+        raise ValidationError("invalid_push_refs")
+    try:
+        raw_refs = list(value)
+    except TypeError as exc:
+        raise ValidationError("invalid_push_refs") from exc
+    if len(raw_refs) > MAX_PUSH_REFS:
+        raise ValidationError("too_many_push_refs")
+    refs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw_refs:
+        if not isinstance(item, Mapping):
+            raise ValidationError("invalid_push_ref")
+        group = normalize_qq_id(item.get("group_id"), "push_ref_group_id")
+        message_id = _normalize_string(
+            item.get("message_id"), "push_ref_message_id", maximum=MAX_MESSAGE_ID_LENGTH
+        )
+        key = (group, message_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append({"group_id": group, "message_id": message_id})
+    return tuple(refs)
+
+
 @dataclass(frozen=True, slots=True)
 class GroupReviewConfig:
     """Configuration scoped by one platform instance and one QQ group."""
@@ -129,6 +159,9 @@ class GroupReviewConfig:
     notify_target: str = "target_group"
     specified_group_ids: tuple[str, ...] = ()
     include_answer: bool = True
+    pinned: bool = False
+    push_group_ids: tuple[str, ...] = ()
+    push_style: str = "formatted"
     created_at: float = 0.0
     updated_at: float = 0.0
     configured: bool = True
@@ -153,6 +186,9 @@ class GroupReviewConfig:
         notify_target: Any = "target_group",
         specified_group_ids: Iterable[Any] = (),
         include_answer: Any = True,
+        pinned: Any = False,
+        push_group_ids: Iterable[Any] = (),
+        push_style: Any = "formatted",
         created_at: Any = 0.0,
         updated_at: Any = 0.0,
         configured: bool = True,
@@ -180,6 +216,22 @@ class GroupReviewConfig:
         )
         if target in {"specified_groups", "both"} and not groups:
             raise ValidationError("specified_groups_required")
+        if isinstance(push_group_ids, (str, bytes)):
+            raise ValidationError("invalid_push_group_ids")
+        try:
+            raw_push_groups = list(push_group_ids)
+        except TypeError as exc:
+            raise ValidationError("invalid_push_group_ids") from exc
+        if len(raw_push_groups) > MAX_SPECIFIED_GROUPS:
+            raise ValidationError("too_many_push_groups")
+        push_groups = tuple(
+            dict.fromkeys(
+                normalize_qq_id(item, "push_group_id") for item in raw_push_groups
+            )
+        )
+        style = _normalize_string(push_style, "push_style", maximum=32)
+        if style not in PUSH_STYLES:
+            raise ValidationError("invalid_push_style")
         return cls(
             platform_id=platform,
             group_id=group,
@@ -188,6 +240,9 @@ class GroupReviewConfig:
             notify_target=target,
             specified_group_ids=groups,
             include_answer=answer_enabled,
+            pinned=_normalize_bool(pinned, "pinned"),
+            push_group_ids=push_groups,
+            push_style=style,
             created_at=_normalize_timestamp(created_at, "created_at"),
             updated_at=_normalize_timestamp(updated_at, "updated_at"),
             configured=bool(configured),
@@ -196,6 +251,7 @@ class GroupReviewConfig:
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["specified_group_ids"] = list(self.specified_group_ids)
+        value["push_group_ids"] = list(self.push_group_ids)
         return value
 
     @property
@@ -229,6 +285,9 @@ class JoinRequest:
     status: str = "pending"
     platform_error: str = ""
     notified_targets: tuple[str, ...] = ()
+    # 推送消息映射：{"group_id": 推送群, "message_id": 推送消息 ID}，
+    # 供群内引用回复审批定位申请；随申请本身过期（expires_at）。
+    push_refs: tuple[dict[str, str], ...] = ()
 
     @classmethod
     def create(
@@ -250,6 +309,7 @@ class JoinRequest:
         status: Any = "pending",
         platform_error: Any = "",
         notified_targets: Iterable[Any] = (),
+        push_refs: Iterable[Any] = (),
     ) -> JoinRequest:
         now = time.time() if created_at is None else created_at
         changed = now if updated_at is None else updated_at
@@ -272,6 +332,7 @@ class JoinRequest:
             )
         except TypeError as exc:
             raise ValidationError("invalid_notified_targets") from exc
+        ref_values = _normalize_push_refs(push_refs)
         return cls(
             request_id=opaque_id,
             platform_id=normalize_platform_id(platform_id),
@@ -293,11 +354,13 @@ class JoinRequest:
                 platform_error, "platform_error", MAX_ERROR_LENGTH
             ),
             notified_targets=target_values,
+            push_refs=ref_values,
         )
 
     def to_internal_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["notified_targets"] = list(self.notified_targets)
+        value["push_refs"] = [dict(ref) for ref in self.push_refs]
         return value
 
     def to_public_dict(self, *, include_answer: bool = True) -> dict[str, Any]:
@@ -465,6 +528,9 @@ class JoinReviewStore:
         notify_target: Any = "target_group",
         specified_group_ids: Iterable[Any] = (),
         include_answer: Any = True,
+        pinned: Any = False,
+        push_group_ids: Iterable[Any] = (),
+        push_style: Any = "formatted",
     ) -> GroupReviewConfig:
         now = self._clock()
         key = (normalize_platform_id(platform_id), normalize_qq_id(group_id))
@@ -478,6 +544,9 @@ class JoinReviewStore:
                 notify_target=notify_target,
                 specified_group_ids=specified_group_ids,
                 include_answer=include_answer,
+                pinned=pinned,
+                push_group_ids=push_group_ids,
+                push_style=push_style,
                 created_at=old.created_at if old is not None else now,
                 updated_at=now,
             )
@@ -519,6 +588,9 @@ class JoinReviewStore:
                     "notify_target",
                     "specified_group_ids",
                     "include_answer",
+                    "pinned",
+                    "push_group_ids",
+                    "push_style",
                 }
                 if unexpected:
                     raise ValidationError("unexpected_group_config_fields")
@@ -541,6 +613,9 @@ class JoinReviewStore:
                         notify_target=item.get("notify_target", "target_group"),
                         specified_group_ids=item.get("specified_group_ids", ()),
                         include_answer=item.get("include_answer", True),
+                        pinned=item.get("pinned", False),
+                        push_group_ids=item.get("push_group_ids", ()),
+                        push_style=item.get("push_style", "formatted"),
                         created_at=old.created_at if old is not None else now,
                         updated_at=now,
                     )
@@ -887,6 +962,58 @@ class JoinReviewStore:
         async with self._lock:
             request = self._requests.get(opaque_id)
             return request is not None and target in request.notified_targets
+
+    async def record_push_ref(
+        self, request_id: Any, group_id: Any, message_id: Any
+    ) -> bool:
+        """Record one pushed message ref for reply-based review. Idempotent."""
+        opaque_id = _normalize_string(request_id, "request_id", maximum=128)
+        group = normalize_qq_id(group_id, "push_ref_group_id")
+        mid = _normalize_string(
+            message_id, "push_ref_message_id", maximum=MAX_MESSAGE_ID_LENGTH
+        )
+        async with self._lock:
+            request = self._requests.get(opaque_id)
+            if request is None:
+                return False
+            ref = {"group_id": group, "message_id": mid}
+            if ref in request.push_refs:
+                return True
+            if len(request.push_refs) >= MAX_PUSH_REFS:
+                raise ValidationError("too_many_push_refs")
+            updated = self._replace_request(
+                request,
+                push_refs=(*request.push_refs, ref),
+                updated_at=self._clock(),
+            )
+            self._requests[opaque_id] = updated
+            try:
+                self._save_locked()
+            except Exception:
+                self._requests[opaque_id] = request
+                raise
+            return True
+
+    async def find_request_by_push_ref(
+        self, platform_id: Any, group_id: Any, message_id: Any
+    ) -> JoinRequest | None:
+        """Locate a request by one pushed message ref; pending TTL applies."""
+        platform = normalize_platform_id(platform_id)
+        group = normalize_qq_id(group_id, "push_ref_group_id")
+        mid = _normalize_string(
+            message_id, "push_ref_message_id", maximum=MAX_MESSAGE_ID_LENGTH
+        )
+        async with self._lock:
+            changed = self._expire_locked(self._clock())
+            if changed:
+                self._save_locked()
+            for request in self._requests.values():
+                if request.platform_id != platform:
+                    continue
+                for ref in request.push_refs:
+                    if ref["group_id"] == group and ref["message_id"] == mid:
+                        return request
+            return None
 
     async def close(self) -> None:
         """Drop process-local claims during plugin termination or hot reload."""

@@ -69,6 +69,28 @@ ANSWER_JUDGE_PROMPT = """你是一个入群问答审核助手。判断用户的�
 - uncertain：无法判断（如知识不足、表述模糊）"""
 
 
+PUSH_MESSAGE_PROMPT = """请为以下待审入群申请写一段发到管理群的自然语言通知。
+要求：包含昵称、QQ、等级、入群问题、答案与来源群；根据问答质量给出你自己
+对该申请的看法（靠不靠谱），并询问管理员或群主是否同意；引导他们引用本条
+消息回复“同意”或“不同意”，或到入群审核管理页处理；语气自然简洁；
+不超过 200 字；只输出纯文本，不要使用 markdown，不要输出通知以外的内容。
+昵称：{nickname}
+QQ：{user_id}
+等级：{level}
+问题：{question}
+答案：{answer}
+来源群：{source_group_name}（{source_group_id}）"""
+
+
+REPLY_JUDGE_PROMPT = """你是入群审核助手。一位管理员引用推送消息回复了以下内容，
+判断他对该入群申请的态度是同意还是拒绝。
+只返回 JSON：{{"decision": "approve/reject/unclear"}}
+- approve：明确同意该申请入群（如“同意”“通过”“让他进”）
+- reject：明确拒绝该申请入群（如“不同意”“拒绝”“别放进来”）
+- unclear：语义含糊、与审批无关或无法判断
+回复内容：{reply_text}"""
+
+
 def _safe_name(event: Any) -> str:
     """从事件中安全提取发送者名称。"""
     try:
@@ -140,3 +162,24 @@ def build_answer_judge_prompt(
         reference_answers=ref,
         evidence=evidence or "无",
     )
+
+
+def build_push_message_prompt(
+    request: Any,
+    source_group_name: str,
+) -> str:
+    """构建入群申请推送的自然语言文案生成提示词。"""
+    return PUSH_MESSAGE_PROMPT.format(
+        nickname=str(getattr(request, "nickname", "") or "未知"),
+        user_id=str(getattr(request, "user_id", "") or "未知"),
+        level=str(getattr(request, "level", "") or "未知"),
+        question=str(getattr(request, "question", "") or "未知"),
+        answer=str(getattr(request, "answer", "") or "未知"),
+        source_group_name=source_group_name or "未知群名",
+        source_group_id=str(getattr(request, "group_id", "") or "未知"),
+    )
+
+
+def build_reply_judge_prompt(reply_text: str) -> str:
+    """构建引用回复审批的语义判断提示词。"""
+    return REPLY_JUDGE_PROMPT.format(reply_text=str(reply_text or "")[:500])

@@ -124,6 +124,9 @@ def test_single_update_is_strict_and_persists_only_joined_reviewable_group(
         "notify_target": "both",
         "specified_group_ids": ["300"],
         "include_answer": False,
+        "pinned": True,
+        "push_group_ids": ["300"],
+        "push_style": "natural",
     }
     monkeypatch.setattr(api_module, "request", FakeRequest(payload))
     result = response_data(run(api.update_group()))
@@ -133,6 +136,9 @@ def test_single_update_is_strict_and_persists_only_joined_reviewable_group(
     assert stored.review_send_enabled is True
     assert stored.specified_group_ids == ("300",)
     assert stored.include_answer is False
+    assert stored.pinned is True
+    assert stored.push_group_ids == ("300",)
+    assert stored.push_style == "natural"
 
     monkeypatch.setattr(
         api_module,
@@ -142,6 +148,56 @@ def test_single_update_is_strict_and_persists_only_joined_reviewable_group(
     denied = response_data(run(api.update_group()))
     assert denied["success"] is False
     assert denied["error"] == "insufficient_permission"
+
+
+def test_push_group_ids_must_be_joined_groups(tmp_path, monkeypatch):
+    """推送群必须是当前 Bot 已加入的群。"""
+    api, store, _, _ = make_api(tmp_path)
+    payload = {
+        "platform_id": "qq-main",
+        "group_id": "100",
+        "auto_audit_enabled": False,
+        "review_send_enabled": True,
+        "notify_target": "target_group",
+        "specified_group_ids": [],
+        "include_answer": True,
+        "pinned": False,
+        "push_group_ids": ["999"],
+        "push_style": "formatted",
+    }
+    monkeypatch.setattr(api_module, "request", FakeRequest(payload))
+    result = response_data(run(api.update_group()))
+    assert result["success"] is False
+    assert result["error"] == "push_group_not_joined"
+    assert run(store.get_group_config("qq-main", "100")).configured is False
+
+
+def test_batch_preserves_pinned_and_push_groups(tmp_path, monkeypatch):
+    """批量操作保留按群的置顶与推送群配置。"""
+    api, store, _, _ = make_api(tmp_path)
+    run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            pinned=True,
+            push_group_ids=["300"],
+        )
+    )
+    monkeypatch.setattr(
+        api_module,
+        "request",
+        FakeRequest(
+            {
+                "action": "enable_auto_audit",
+                "groups": [{"platform_id": "qq-main", "group_id": "100"}],
+            }
+        ),
+    )
+    assert response_data(run(api.batch_groups()))["success"] is True
+    stored = run(store.get_group_config("qq-main", "100"))
+    assert stored.auto_audit_enabled is True
+    assert stored.pinned is True
+    assert stored.push_group_ids == ("300",)
 
 
 def test_batch_add_and_explicit_legacy_application(tmp_path, monkeypatch):

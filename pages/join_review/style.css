@@ -640,6 +640,16 @@ input[type="checkbox"] {
   opacity: 0.6;
 }
 
+/* 手动置顶行：accent 左边条 + 轻微底色区分 */
+.row-pinned {
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: var(--accent-soft);
+}
+
+.row-pinned.row-disabled {
+  background: rgba(7, 17, 29, 0.28);
+}
+
 .empty-row td,
 .empty-state {
   padding: 34px 18px;
@@ -953,5 +963,98 @@ input[type="checkbox"] {
     transition: none !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+}
+
+/* 群设置悬浮窗（popover）：点击群名打开，一次只开一个 */
+.group-link {
+  display: inline;
+  padding: 0;
+  min-height: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: color 0.2s var(--ease), text-decoration-color 0.2s var(--ease);
+}
+
+.group-link:hover:not(:disabled) {
+  color: var(--accent);
+  background: none;
+  border: none;
+  text-decoration-color: var(--accent);
+}
+
+.group-link:disabled {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.group-popover {
+  position: fixed;
+  z-index: 60;
+  width: 380px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(93, 214, 192, 0.06);
+}
+
+.group-popover:focus-within {
+  border-color: var(--accent);
+}
+
+.popover-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.popover-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.popover-field {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+
+.popover-field > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.popover-field .inline-select,
+.popover-field .group-whitelist {
+  width: 100%;
+}
+
+.popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+@media (max-width: 560px) {
+  .group-popover {
+    left: 8px !important;
+    right: 8px;
+    width: auto;
   }
 }

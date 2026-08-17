@@ -69,18 +69,12 @@
               <th class="select-column"><span class="sr-only">选择</span></th>
               <th>群</th>
               <th>Bot / 权限</th>
-              <th>配置</th>
-              <th>自动审核</th>
-              <th>发送审核</th>
-              <th>通知位置</th>
-              <th>指定审核群白名单</th>
-              <th>显示答案</th>
-              <th>待审</th>
+              <th>状态</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody id="groups-body">
-            <tr class="empty-row"><td colspan="11">正在加载…</td></tr>
+            <tr class="empty-row"><td colspan="5">正在加载…</td></tr>
           </tbody>
         </table>
       </div>
@@ -99,6 +93,8 @@
       </div>
     </article>
   </main>
+
+  <div id="group-popover" class="group-popover hidden" role="dialog" aria-label="群审核设置"></div>
 
   <script src="/api/plugin/page/bridge-sdk.js"></script>
   <script src="./app.js"></script>

@@ -61,6 +61,7 @@ _DEFAULTS: dict[str, Any] = {
     "audit_notify_targets": [],
     "confirm_notify_targets": [],
     "proactive_delivery_targets": [],
+    "push_llm_provider": "",
     "pending_ttl_hours": 24,
     "cross_group_violation": False,
     "enable_set_admin_revoke": False,
@@ -282,6 +283,10 @@ class Config:
             for x in self._raw.get("proactive_delivery_targets", [])
             if str(x).strip()
         ]
+
+    @property
+    def push_llm_provider(self) -> str:
+        return str(self._raw.get("push_llm_provider", ""))
 
     @property
     def pending_ttl_hours(self) -> int:

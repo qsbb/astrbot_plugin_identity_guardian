@@ -202,6 +202,12 @@
     },
     "hint": "只填写已确认属于 bot 主人的完整私聊 unified_msg_origin，例如 aiocqhttp:FriendMessage:888888。必须精确匹配；群聊、频道、未列出的会话和情中的跨平台别名均不会获得主动发送权限。"
   },
+  "push_llm_provider": {
+    "description": "[入群] 申请推送文案生成 LLM Provider",
+    "type": "string",
+    "default": "",
+    "hint": "push_join_request 工具 natural 样式的文案生成用 LLM Provider ID，留空则回退主对话 provider。生成失败或不可用时自动回退格式化模板文案。"
+  },
   "pending_ttl_hours": {
     "description": "[入群] 待审请求保留时长（小时）",
     "type": "int",

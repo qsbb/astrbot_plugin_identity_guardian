@@ -17,6 +17,8 @@ const state = {
   requestErrors: new Map(),
   batchBusy: false,
   legacyAvailable: false,
+  // 当前打开设置悬浮窗的群 key；一次只开一个。
+  popoverKey: null,
 };
 
 const API_ERROR_MESSAGES = {
@@ -27,6 +29,8 @@ const API_ERROR_MESSAGES = {
   group_not_joined: "Bot 当前不在该群中",
   insufficient_permission: "Bot 当前不具备入群审核权限",
   specified_groups_required: "通知到指定群时，必须填写审核群白名单",
+  push_group_not_joined: "推送群必须是当前 Bot 已加入的群",
+  invalid_push_style: "推送样式无效",
   duplicate_group_config: "批量配置中包含重复群",
   expired: "该申请已过期，不能继续处理",
   already_processed: "该申请已由其他管理员处理",
@@ -152,6 +156,13 @@ function normalizeGroup(item, configured = false) {
       ? merged.specified_group_ids.map(String)
       : [],
     include_answer: merged.include_answer !== false,
+    pinned: merged.pinned === true,
+    push_group_ids: Array.isArray(merged.push_group_ids)
+      ? merged.push_group_ids.map(String)
+      : [],
+    push_style: ["formatted", "natural"].includes(merged.push_style)
+      ? merged.push_style
+      : "formatted",
     pending_count: Number.isFinite(Number(merged.pending_count)) ? Number(merged.pending_count) : 0,
     joined: merged.joined !== false && !configured,
   };
@@ -194,8 +205,9 @@ function mergeGroups() {
     ...group,
     pending_count: Math.max(group.pending_count, pendingCounts.get(groupKey(group.platform_id, group.group_id)) || 0),
   })).sort((left, right) => (
-    // 有审核权限的群默认置顶，无审核权限的排在下面。
-    Number(right.can_review) - Number(left.can_review)
+    // 手动置顶的群排在最前；其次有审核权限的群在前，无审核权限的排在下面。
+    Number(right.pinned) - Number(left.pinned)
+      || Number(right.can_review) - Number(left.can_review)
       || left.platform_id.localeCompare(right.platform_id, "zh-CN")
       || Number(left.group_id) - Number(right.group_id)
   ));
@@ -270,25 +282,18 @@ function renderGroupRow(group) {
   const busy = state.rowBusy.has(key);
   const unavailable = !group.joined || !group.can_review;
   const fieldsDisabled = busy || unavailable;
-  const notificationDisabled = group.notify_target === "target_group" || fieldsDisabled;
   const selected = state.selected.has(key);
   const botLabel = group.bot_name || (group.bot_id ? `QQ ${group.bot_id}` : group.platform_id);
-  return `<tr data-group-key="${escapeHtml(key)}" class="${unavailable ? "row-disabled" : ""}">
+  const statusMarkup = [
+    group.configured ? '<span class="status-badge good">已配置</span>' : '<span class="status-badge">未配置</span>',
+    `<span class="status-badge ${group.pending_count ? "warn" : ""}">待审 ${group.pending_count}</span>`,
+  ].join("");
+  return `<tr data-group-key="${escapeHtml(key)}" class="${unavailable ? "row-disabled" : ""}${group.pinned ? " row-pinned" : ""}">
     <td class="select-cell" data-label="选择"><input type="checkbox" data-select-group aria-label="选择群 ${escapeHtml(group.group_id)}"${selected ? " checked" : ""}${fieldsDisabled ? " disabled" : ""}></td>
-    <td class="group-cell" data-label="群"><span class="primary-value">${escapeHtml(group.group_name)}</span><span class="secondary-value">${escapeHtml(group.group_id)}</span></td>
+    <td class="group-cell" data-label="群"><button class="group-link" type="button" data-open-settings${fieldsDisabled ? " disabled" : ""} aria-label="配置群 ${escapeHtml(group.group_id)}">${escapeHtml(group.group_name)}</button><span class="secondary-value">${escapeHtml(group.group_id)}</span></td>
     <td data-label="Bot / 权限"><span class="primary-value">${escapeHtml(botLabel)}</span><span class="secondary-value">${escapeHtml(group.bot_role)} · ${escapeHtml(group.platform_id)}</span>${permissionBadge(group)}</td>
-    <td data-label="配置">${group.configured ? '<span class="status-badge good">已配置</span>' : '<span class="status-badge">未配置</span>'}</td>
-    <td data-label="自动审核">${switchMarkup("auto_audit_enabled", group.auto_audit_enabled, fieldsDisabled, group.auto_audit_enabled ? "开启" : "关闭")}</td>
-    <td data-label="发送审核">${switchMarkup("review_send_enabled", group.review_send_enabled, fieldsDisabled, group.review_send_enabled ? "开启" : "关闭")}</td>
-    <td data-label="通知位置"><select class="inline-select editable-control" data-field="notify_target"${fieldsDisabled ? " disabled" : ""}>
-      <option value="target_group"${group.notify_target === "target_group" ? " selected" : ""}>申请所属群</option>
-      <option value="specified_groups"${group.notify_target === "specified_groups" ? " selected" : ""}>指定审核群</option>
-      <option value="both"${group.notify_target === "both" ? " selected" : ""}>两边发送</option>
-    </select></td>
-    <td data-label="指定审核群白名单"><input class="group-whitelist editable-control" data-field="specified_group_ids" type="text" inputmode="numeric" maxlength="2099" placeholder="群号，逗号分隔" value="${escapeHtml(group.specified_group_ids.join(", "))}"${notificationDisabled ? " disabled" : ""}><span class="field-error" data-row-error></span></td>
-    <td data-label="显示答案">${switchMarkup("include_answer", group.include_answer, fieldsDisabled, group.include_answer ? "显示" : "隐藏")}</td>
-    <td data-label="待审"><span class="status-badge ${group.pending_count ? "warn" : ""}">${group.pending_count}</span></td>
-    <td data-label="操作"><button class="button compact" type="button" data-save-group${fieldsDisabled ? " disabled" : ""} aria-busy="${busy}">${busy ? "保存中…" : "保存"}</button></td>
+    <td data-label="状态">${statusMarkup}</td>
+    <td data-label="操作"><button class="button compact" type="button" data-open-settings${fieldsDisabled ? " disabled" : ""}>设置</button></td>
   </tr>`;
 }
 
@@ -297,12 +302,109 @@ function renderGroups() {
   const body = $("#groups-body");
   body.innerHTML = state.groups.length
     ? state.groups.map(renderGroupRow).join("")
-    : '<tr class="empty-row"><td colspan="11">当前 aiocqhttp Bot 暂无可显示的群，请刷新已加入群。</td></tr>';
+    : '<tr class="empty-row"><td colspan="5">当前 aiocqhttp Bot 暂无可显示的群，请刷新已加入群。</td></tr>';
   const configuredCount = state.groups.filter((group) => group.configured).length;
-  $("#group-summary").textContent = `共 ${state.groups.length} 个群，${configuredCount} 个已配置；未配置群默认关闭两个开关。`;
+  $("#group-summary").textContent = `共 ${state.groups.length} 个群，${configuredCount} 个已配置；点群名打开设置悬浮窗，未配置群默认关闭两个开关。`;
   $("#legacy-notice").classList.toggle("hidden", !state.legacyAvailable);
   updateBatchUi();
   updateStats();
+  renderOpenPopover();
+}
+
+// ------------------------------------------------------------------
+// 群设置悬浮窗：一次只开一个，ESC / 点击外部关闭
+// ------------------------------------------------------------------
+
+function popoverElement() {
+  return $("#group-popover");
+}
+
+function popoverFieldMarkup(group, disabled) {
+  const notificationDisabled = group.notify_target === "target_group" || disabled;
+  return `
+  <div class="popover-heading">
+    <strong>${escapeHtml(group.group_name)}</strong>
+    <span class="secondary-value">${escapeHtml(group.group_id)}</span>
+  </div>
+  <div class="popover-grid">
+    ${switchMarkup("auto_audit_enabled", group.auto_audit_enabled, disabled, group.auto_audit_enabled ? "自动审核：开启" : "自动审核：关闭")}
+    ${switchMarkup("review_send_enabled", group.review_send_enabled, disabled, group.review_send_enabled ? "发送审核：开启" : "发送审核：关闭")}
+    ${switchMarkup("include_answer", group.include_answer, disabled, group.include_answer ? "显示答案" : "隐藏答案")}
+    ${switchMarkup("pinned", group.pinned, disabled, group.pinned ? "已置顶" : "置顶")}
+    <label class="popover-field"><span>通知位置</span><select class="inline-select editable-control" data-field="notify_target"${disabled ? " disabled" : ""}>
+      <option value="target_group"${group.notify_target === "target_group" ? " selected" : ""}>申请所属群</option>
+      <option value="specified_groups"${group.notify_target === "specified_groups" ? " selected" : ""}>指定审核群</option>
+      <option value="both"${group.notify_target === "both" ? " selected" : ""}>两边发送</option>
+    </select></label>
+    <label class="popover-field"><span>指定审核群白名单</span><input class="group-whitelist editable-control" data-field="specified_group_ids" type="text" inputmode="numeric" maxlength="2099" placeholder="群号，逗号分隔" value="${escapeHtml(group.specified_group_ids.join(", "))}"${notificationDisabled ? " disabled" : ""}></label>
+    <label class="popover-field"><span>推送群（留空回退申请所属群）</span><input class="group-whitelist editable-control" data-field="push_group_ids" type="text" inputmode="numeric" maxlength="2099" placeholder="群号，逗号分隔" value="${escapeHtml(group.push_group_ids.join(", "))}"${disabled ? " disabled" : ""}></label>
+    <label class="popover-field"><span>推送样式</span><select class="inline-select editable-control" data-field="push_style"${disabled ? " disabled" : ""}>
+      <option value="formatted"${group.push_style === "formatted" ? " selected" : ""}>格式化</option>
+      <option value="natural"${group.push_style === "natural" ? " selected" : ""}>自然语言</option>
+    </select></label>
+  </div>
+  <div class="field-error" data-row-error></div>
+  <div class="popover-actions">
+    <button class="button compact" type="button" data-popover-save${disabled ? " disabled" : ""} aria-busy="${state.rowBusy.has(groupKey(group.platform_id, group.group_id))}">${state.rowBusy.has(groupKey(group.platform_id, group.group_id)) ? "保存中…" : "保存"}</button>
+    <button class="button compact secondary" type="button" data-popover-cancel>关闭</button>
+  </div>`;
+}
+
+function positionGroupPopover(anchor) {
+  const popover = popoverElement();
+  if (!popover || popover.classList.contains("hidden")) return;
+  const margin = 8;
+  const rect = anchor ? anchor.getBoundingClientRect() : null;
+  const width = popover.offsetWidth;
+  const height = popover.offsetHeight;
+  let left = rect ? rect.left : (window.innerWidth - width) / 2;
+  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+  let top = rect ? rect.bottom + 6 : (window.innerHeight - height) / 2;
+  if (top + height > window.innerHeight - margin) {
+    top = Math.max(margin, (rect ? rect.top : window.innerHeight / 2) - height - 6);
+  }
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+}
+
+function openGroupPopover(key, anchor) {
+  const group = state.groupMap.get(key);
+  if (!group) return;
+  if (state.popoverKey === key) {
+    closeGroupPopover();
+    return;
+  }
+  state.popoverKey = key;
+  const popover = popoverElement();
+  popover.dataset.groupKey = key;
+  const busy = state.rowBusy.has(key);
+  popover.innerHTML = popoverFieldMarkup(group, busy || !group.joined || !group.can_review);
+  popover.classList.remove("hidden");
+  positionGroupPopover(anchor);
+  $(".editable-control", popover)?.focus();
+}
+
+function closeGroupPopover() {
+  state.popoverKey = null;
+  const popover = popoverElement();
+  popover.classList.add("hidden");
+  popover.innerHTML = "";
+  delete popover.dataset.groupKey;
+}
+
+// 行数据刷新后同步已打开的悬浮窗内容；群消失则关闭。
+function renderOpenPopover() {
+  if (!state.popoverKey) return;
+  const group = state.groupMap.get(state.popoverKey);
+  if (!group) {
+    closeGroupPopover();
+    return;
+  }
+  const popover = popoverElement();
+  const busy = state.rowBusy.has(state.popoverKey);
+  popover.innerHTML = popoverFieldMarkup(group, busy || !group.joined || !group.can_review);
+  const anchor = $(`tr[data-group-key="${CSS.escape(state.popoverKey)}"] .group-link`);
+  positionGroupPopover(anchor);
 }
 
 function updateBatchUi() {
@@ -405,17 +507,21 @@ function validateQqId(value) {
   return /^[1-9][0-9]{0,19}$/.test(String(value));
 }
 
-function parseSpecifiedGroups(value) {
+function parseGroupIdList(value, label) {
   const items = String(value || "").split(/[,，;；\s]+/).map((item) => item.trim()).filter(Boolean);
-  if (items.length > 100) throw new Error("指定审核群最多 100 个");
+  if (items.length > 100) throw new Error(`${label}最多 100 个`);
   for (const groupId of items) {
-    if (!validateQqId(groupId)) throw new Error(`审核群号“${groupId}”格式不正确`);
+    if (!validateQqId(groupId)) throw new Error(`${label}“${groupId}”格式不正确`);
   }
   return Array.from(new Set(items));
 }
 
-function configPayloadFromRow(row) {
-  const key = row.dataset.groupKey;
+function parseSpecifiedGroups(value) {
+  return parseGroupIdList(value, "审核群号");
+}
+
+function configPayloadFromForm(container) {
+  const key = container.dataset.groupKey;
   const group = state.groupMap.get(key);
   if (!group) throw new Error("群信息已变化，请刷新后重试");
   if (!group.platform_id || group.platform_id.length > 128) throw new Error("Bot 平台标识无效");
@@ -423,27 +529,34 @@ function configPayloadFromRow(row) {
   if (!group.joined) throw new Error("Bot 当前不在该群中");
   if (!group.can_review) throw new Error("Bot 当前不具备该群的审核权限");
 
-  const notifyTarget = $("[data-field='notify_target']", row).value;
+  const notifyTarget = $("[data-field='notify_target']", container).value;
   if (!["target_group", "specified_groups", "both"].includes(notifyTarget)) {
     throw new Error("通知位置无效");
   }
-  const specifiedGroups = parseSpecifiedGroups($("[data-field='specified_group_ids']", row).value);
+  const specifiedGroups = parseSpecifiedGroups($("[data-field='specified_group_ids']", container).value);
   if (["specified_groups", "both"].includes(notifyTarget) && specifiedGroups.length === 0) {
     throw new Error("通知到指定群时，必须填写审核群白名单");
+  }
+  const pushStyle = $("[data-field='push_style']", container).value;
+  if (!["formatted", "natural"].includes(pushStyle)) {
+    throw new Error("推送样式无效");
   }
   return {
     platform_id: group.platform_id,
     group_id: group.group_id,
-    auto_audit_enabled: $("[data-field='auto_audit_enabled']", row).checked,
-    review_send_enabled: $("[data-field='review_send_enabled']", row).checked,
+    auto_audit_enabled: $("[data-field='auto_audit_enabled']", container).checked,
+    review_send_enabled: $("[data-field='review_send_enabled']", container).checked,
     notify_target: notifyTarget,
     specified_group_ids: specifiedGroups,
-    include_answer: $("[data-field='include_answer']", row).checked,
+    include_answer: $("[data-field='include_answer']", container).checked,
+    pinned: $("[data-field='pinned']", container).checked,
+    push_group_ids: parseGroupIdList($("[data-field='push_group_ids']", container).value, "推送群号"),
+    push_style: pushStyle,
   };
 }
 
-function showRowError(row, error) {
-  const element = $("[data-row-error]", row);
+function showFormError(container, error) {
+  const element = $("[data-row-error]", container);
   if (element) element.textContent = error?.message || String(error || "");
 }
 
@@ -501,15 +614,15 @@ async function refreshJoinedGroups() {
   }
 }
 
-async function saveGroup(row) {
-  const key = row.dataset.groupKey;
+async function saveGroup(container) {
+  const key = container.dataset.groupKey;
   if (!key || state.rowBusy.has(key)) return;
-  showRowError(row, "");
+  showFormError(container, "");
   let payload;
   try {
-    payload = configPayloadFromRow(row);
+    payload = configPayloadFromForm(container);
   } catch (error) {
-    showRowError(row, error);
+    showFormError(container, error);
     return;
   }
   state.rowBusy.add(key);
@@ -517,6 +630,7 @@ async function saveGroup(row) {
   try {
     await apiPost("groups/update", payload);
     await refreshStoredData();
+    closeGroupPopover();
     showStatus(`群 ${payload.group_id} 的审核配置已保存。`);
   } catch (error) {
     showPageError(error);
@@ -587,6 +701,17 @@ async function handleRequestAction(card, action, reason = "") {
   }
 }
 
+function syncToggleLabel(input) {
+  const label = input.closest("label")?.querySelector("span");
+  if (!label) return;
+  const field = input.dataset.field;
+  const checked = input.checked;
+  if (field === "include_answer") label.textContent = checked ? "显示答案" : "隐藏答案";
+  else if (field === "pinned") label.textContent = checked ? "已置顶" : "置顶";
+  else if (field === "auto_audit_enabled") label.textContent = checked ? "自动审核：开启" : "自动审核：关闭";
+  else if (field === "review_send_enabled") label.textContent = checked ? "发送审核：开启" : "发送审核：关闭";
+}
+
 function bindEvents() {
   $("#refresh-joined").addEventListener("click", refreshJoinedGroups);
   $("#refresh-requests").addEventListener("click", async (event) => {
@@ -622,33 +747,51 @@ function bindEvents() {
       if (event.target.checked) state.selected.add(row.dataset.groupKey);
       else state.selected.delete(row.dataset.groupKey);
       updateBatchUi();
-      return;
     }
-    if (event.target.matches("[data-field='notify_target']")) {
-      const whitelist = $("[data-field='specified_group_ids']", row);
-      const group = state.groupMap.get(row.dataset.groupKey);
-      whitelist.disabled = event.target.value === "target_group" || !group?.can_review;
-      showRowError(row, "");
-    }
-    if (event.target.matches("[data-field='auto_audit_enabled'], [data-field='review_send_enabled'], [data-field='include_answer']")) {
-      const label = event.target.closest("label")?.querySelector("span");
-      if (label) {
-        const field = event.target.dataset.field;
-        label.textContent = field === "include_answer"
-          ? (event.target.checked ? "显示" : "隐藏")
-          : (event.target.checked ? "开启" : "关闭");
-      }
-    }
-  });
-
-  $("#groups-body").addEventListener("input", (event) => {
-    const row = event.target.closest("tr[data-group-key]");
-    if (row) showRowError(row, "");
   });
 
   $("#groups-body").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-save-group]");
-    if (button) saveGroup(button.closest("tr[data-group-key]"));
+    const opener = event.target.closest("[data-open-settings]");
+    if (!opener) return;
+    const row = opener.closest("tr[data-group-key]");
+    if (row) openGroupPopover(row.dataset.groupKey, row);
+  });
+
+  // 悬浮窗内交互：字段变更、通知位置联动、保存与关闭。
+  const popover = popoverElement();
+  popover.addEventListener("change", (event) => {
+    if (event.target.matches("[data-field='notify_target']")) {
+      const whitelist = $("[data-field='specified_group_ids']", popover);
+      const group = state.groupMap.get(popover.dataset.groupKey);
+      whitelist.disabled = event.target.value === "target_group" || !group?.can_review;
+      showFormError(popover, "");
+    }
+    if (event.target.matches("[data-field='auto_audit_enabled'], [data-field='review_send_enabled'], [data-field='include_answer'], [data-field='pinned']")) {
+      syncToggleLabel(event.target);
+    }
+  });
+
+  popover.addEventListener("input", () => showFormError(popover, ""));
+
+  popover.addEventListener("click", (event) => {
+    if (event.target.closest("[data-popover-save]")) {
+      saveGroup(popover);
+      return;
+    }
+    if (event.target.closest("[data-popover-cancel]")) {
+      closeGroupPopover();
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!state.popoverKey) return;
+    if (event.target.closest("#group-popover")) return;
+    if (event.target.closest("[data-open-settings]")) return;
+    closeGroupPopover();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.popoverKey) closeGroupPopover();
   });
 
   for (const button of $all("[data-batch-action]")) {

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import pathlib
 from typing import Any
 
@@ -34,14 +35,23 @@ from .core.identity_control_plane import (
     control_plane_result,
 )
 from .core.knowledge import KnowledgeService
-from .core.join_review import JoinReviewRuntime
+from .core.join_review import GuardBlockedError, JoinReviewRuntime
 from .core.join_review_api import JoinReviewPageAPI
-from .core.join_review_store import JoinReviewStore
+from .core.join_review_store import (
+    ACTIONABLE_STATUSES,
+    JoinReviewStore,
+    RequestNotActionable,
+    ValidationError,
+)
 from .core.moderation import ModerationService
 from .core.models import ActionDecision, ActorContext, TriggerSource
 from .core.onebot import OneBotClient
 from .core.policy import PolicyEngine
-from .core.prompts import SECURITY_RULES, build_identity_prompt
+from .core.prompts import (
+    SECURITY_RULES,
+    build_identity_prompt,
+    build_reply_judge_prompt,
+)
 from .core.quest_session import (
     QUEST_SESSION_AUTH_CONTRACT_NAME,
     QUEST_SESSION_AUTH_CONTRACT_VERSION,
@@ -54,6 +64,7 @@ from .core.quest_binding_control import (
     result as quest_binding_control_result,
 )
 from .core.relationship import RelationshipService
+from .core.request_push import RequestPushService
 from .core.request_context import (
     OWNER_IDENTITY_GUARDIAN,
     PHASE_LLM_REQUEST,
@@ -182,6 +193,7 @@ class IdentityGuardianPlugin(Star):
             self.data_dir,
             ttl_seconds=self.config.pending_ttl_hours * 60 * 60,
         )
+        self.request_push = RequestPushService(self.join_review_store, self.onebot)
         self.join_review = JoinReviewRuntime(
             self.join_audit,
             self.onebot,
@@ -601,10 +613,11 @@ class IdentityGuardianPlugin(Star):
     # LLM 调用
     # ------------------------------------------------------------------
 
-    async def _call_audit_llm(self, prompt: str) -> str:
-        """调用审核用 LLM，留空则回退主对话 LLM。"""
+    async def _request_llm(
+        self, prompt: str, system_prompt: str, provider_id: str
+    ) -> str:
+        """统一的 LLM 调用器：指定 provider，留空回退主对话 LLM。"""
         try:
-            provider_id = self.config.audit_llm_provider
             provider = None
 
             if provider_id:
@@ -628,15 +641,63 @@ class IdentityGuardianPlugin(Star):
             # 调用 LLM
             from astrbot.api.provider import ProviderRequest
 
-            req = ProviderRequest(prompt=prompt, system_prompt="")
+            req = ProviderRequest(prompt=prompt, system_prompt=system_prompt)
             resp = await provider.text_chat(**req.__dict__)
             if hasattr(resp, "completion_text"):
                 return str(resp.completion_text)
             return str(resp)
         except Exception as exc:
             self.logger.warning(
-                "%s audit LLM call failed: %s", LOG_PREFIX, type(exc).__name__
+                "%s LLM call failed: %s", LOG_PREFIX, type(exc).__name__
             )
+            return ""
+
+    async def _call_audit_llm(self, prompt: str) -> str:
+        """调用审核用 LLM，留空则回退主对话 LLM。"""
+        return await self._request_llm(prompt, "", self.config.audit_llm_provider)
+
+    async def _call_push_llm(self, prompt: str, system_prompt: str = "") -> str:
+        """调用推送文案生成 LLM（push_llm_provider），失败返回空串。"""
+        return await self._request_llm(
+            prompt, system_prompt, self.config.push_llm_provider
+        )
+
+    async def _get_push_persona_prompt(self, umo: str) -> str:
+        """按会话 UMO 取人格的 system prompt；任何一步失败都返回空串。
+
+        优先目标会话的人格（conversation_manager 取当前会话 persona_id，
+        再由 persona_manager.get_persona 读 system_prompt）；
+        会话无人格时回退 persona_manager.get_default_persona_v3 的 prompt。
+        """
+        try:
+            umo = str(umo or "")
+            persona_id = ""
+            conversation_manager = getattr(self.context, "conversation_manager", None)
+            if umo and conversation_manager is not None:
+                conversation_id = await conversation_manager.get_curr_conversation_id(
+                    umo
+                )
+                if conversation_id:
+                    conversation = await conversation_manager.get_conversation(
+                        umo, conversation_id
+                    )
+                    persona_id = str(getattr(conversation, "persona_id", "") or "")
+            persona_manager = getattr(self.context, "persona_manager", None)
+            if persona_manager is None:
+                return ""
+            if persona_id:
+                persona = await persona_manager.get_persona(persona_id)
+                prompt = str(getattr(persona, "system_prompt", "") or "")
+            else:
+                personality = await persona_manager.get_default_persona_v3(None)
+                prompt = (
+                    str(personality.get("prompt", ""))
+                    if isinstance(personality, dict)
+                    else ""
+                )
+            return prompt.strip()[:4000]
+        except Exception as exc:
+            self.logger.debug("%s persona lookup failed: %s", LOG_PREFIX, exc)
             return ""
 
     def _ensure_llm_caller(self) -> None:
@@ -844,6 +905,8 @@ class IdentityGuardianPlugin(Star):
             await plugin._handle_notice(event, raw_msg)
         elif post_type == "request":
             await plugin._handle_request(event, raw_msg)
+        elif post_type == "message" and raw_msg.get("message_type") == "group":
+            await plugin._handle_push_reply(event, raw_msg)
 
     async def _handle_notice(
         self, event: AstrMessageEvent, raw: dict[str, Any]
@@ -915,11 +978,15 @@ class IdentityGuardianPlugin(Star):
             # is lazy and does not itself invoke a provider for send-only groups.
             self._ensure_llm_caller()
             try:
-                await runtime.handle_event(event, raw)
+                result = await runtime.handle_event(event, raw)
             except Exception as exc:
                 self.logger.warning(
                     "%s join review failed: %s", LOG_PREFIX, type(exc).__name__
                 )
+                return
+            # 进入人工待审的申请：事件驱动推送到该群配置的推送群（留空回退申请所属群）。
+            if result.outcome == "pending_review" and result.request is not None:
+                await self._push_join_request_review(result.request, result.decision)
             return
 
         # Compatibility for partially constructed instances in older callers.
@@ -1163,6 +1230,188 @@ class IdentityGuardianPlugin(Star):
             return "；".join(parts) + "。"
 
         return f"未实现的查询: {action}"
+
+    async def _push_join_request_review(
+        self, request: Any, decision: Any = None
+    ) -> None:
+        """待审入群申请的事件驱动推送。
+
+        申请进入待审后，把申请推送到申请所属群配置的推送群；推送群留空时
+        回退推送到申请所属群本身。文案附自动审核看法并引导引用回复审批。
+        推送失败只记日志，不影响审核主流程。
+        """
+        try:
+            if not self._check_guard():
+                self.logger.info(
+                    "%s join request push skipped: guard active", LOG_PREFIX
+                )
+                return
+            config = await self.join_review_store.get_group_config(
+                request.platform_id, request.group_id
+            )
+            # 同一文案群发：人格按申请所属群会话取一次，取不到回退默认人格。
+            persona_prompt = await self._get_push_persona_prompt(
+                f"{request.platform_id}:GroupMessage:{request.group_id}"
+            )
+
+            async def push_llm_caller(prompt: str) -> str:
+                return await self._call_push_llm(prompt, persona_prompt)
+
+            sent, skipped, failed = await self.request_push.push_for_request(
+                self.context,
+                request,
+                config,
+                push_llm_caller,
+                self.logger,
+                decision,
+            )
+            if sent or failed:
+                self.logger.info(
+                    "%s join request %s pushed: sent=%s skipped=%s failed=%s",
+                    LOG_PREFIX,
+                    request.request_id,
+                    sent,
+                    skipped,
+                    failed,
+                )
+        except Exception as exc:
+            self.logger.warning(
+                "%s join request push failed: %s", LOG_PREFIX, type(exc).__name__
+            )
+
+    # ------------------------------------------------------------------
+    # 引用回复审批：群内引用推送消息回复「同意/不同意」
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_reply_ref(raw: dict[str, Any]) -> tuple[str, str]:
+        """从 OneBot V11 群消息里提取被引用消息 ID 与回复纯文本。"""
+        segments = raw.get("message")
+        if not isinstance(segments, list):
+            return "", ""
+        quoted_id = ""
+        texts: list[str] = []
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            data = segment.get("data") if isinstance(segment.get("data"), dict) else {}
+            if segment.get("type") == "reply" and not quoted_id:
+                quoted_id = str(data.get("id") or "").strip()
+            elif segment.get("type") == "text":
+                texts.append(str(data.get("text") or ""))
+        return quoted_id, " ".join(texts).strip()
+
+    async def _handle_push_reply(
+        self, event: AstrMessageEvent, raw: dict[str, Any]
+    ) -> None:
+        """群内引用推送消息的回复审批链路。全部异常只记日志，不外抛。"""
+        try:
+            quoted_id, reply_text = self._extract_reply_ref(raw)
+            if not quoted_id:
+                return
+            group_id = str(raw.get("group_id") or "")
+            replier_id = str(raw.get("user_id") or "")
+            try:
+                platform_id = str(event.get_platform_id() or "")
+            except Exception:
+                platform_id = ""
+            if not (platform_id and group_id and replier_id):
+                return
+            try:
+                request = await self.join_review_store.find_request_by_push_ref(
+                    platform_id, group_id, quoted_id
+                )
+            except ValidationError:
+                return
+            if request is None:
+                return
+            # 权限：回复者必须是该群（推送群）的群主/管理员，或 bot 主人。
+            if str(replier_id) not in {str(u) for u in self.config.owner_users}:
+                try:
+                    role = await self.identity.get_role(event, group_id, replier_id)
+                except Exception:
+                    role = "member"
+                if role not in {"owner", "admin"}:
+                    return
+            umo = f"{platform_id}:GroupMessage:{group_id}"
+            if request.status not in ACTIONABLE_STATUSES:
+                await self._send_group_reply(umo, "该申请已被处理。")
+                return
+            # LLM 语义判断：含糊或解析失败时静默，不打扰群。
+            decision = await self._judge_push_reply(reply_text)
+            if decision not in {"approve", "reject"}:
+                return
+            approve = decision == "approve"
+            runtime = getattr(self, "join_review", None)
+            if runtime is None:
+                return
+            try:
+                updated = await runtime.process_request(
+                    self.context,
+                    request.request_id,
+                    approve=approve,
+                    reason="" if approve else "管理员群内拒绝",
+                )
+            except RequestNotActionable:
+                await self._send_group_reply(umo, "该申请已被其他管理员处理或已过期。")
+                return
+            except GuardBlockedError:
+                await self._send_group_reply(
+                    umo, "处理失败：插件已紧急停止或已熔断，请到管理页处理。"
+                )
+                return
+            except Exception as exc:
+                self.logger.warning(
+                    "%s push reply process error: %s", LOG_PREFIX, type(exc).__name__
+                )
+                await self._send_group_reply(
+                    umo, "处理失败：内部错误，请到管理页处理。"
+                )
+                return
+            if updated.status in ("approved", "rejected"):
+                verb = "已同意" if updated.status == "approved" else "已拒绝"
+                await self._send_group_reply(
+                    umo, f"{verb} QQ {request.user_id} 的入群申请。"
+                )
+            else:
+                reason = updated.platform_error or "平台操作失败"
+                await self._send_group_reply(
+                    umo, f"处理失败：{reason}，请到管理页处理。"
+                )
+        except Exception as exc:
+            self.logger.warning(
+                "%s push reply handling failed: %s", LOG_PREFIX, type(exc).__name__
+            )
+
+    async def _judge_push_reply(self, reply_text: str) -> str:
+        """用审核 LLM 判断回复语义，返回 approve/reject/unclear；失败按 unclear。"""
+        if not reply_text:
+            return "unclear"
+        output = await self._call_audit_llm(build_reply_judge_prompt(reply_text))
+        if not output:
+            return "unclear"
+        start = output.find("{")
+        end = output.rfind("}")
+        if start < 0 or end <= start:
+            return "unclear"
+        try:
+            payload = json.loads(output[start : end + 1])
+        except (ValueError, TypeError):
+            return "unclear"
+        if not isinstance(payload, dict):
+            return "unclear"
+        decision = str(payload.get("decision") or "").strip().lower()
+        return decision if decision in {"approve", "reject", "unclear"} else "unclear"
+
+    async def _send_group_reply(self, umo: str, text: str) -> None:
+        """审批结果回复走 AstrBot 链路（无需追踪 message_id），失败只记日志。"""
+        try:
+            from astrbot.api.event import MessageChain
+            from astrbot.api.message_components import Plain
+
+            await self.context.send_message(umo, MessageChain(chain=[Plain(text=text)]))
+        except Exception as exc:
+            self.logger.debug("%s push reply send failed: %s", LOG_PREFIX, exc)
 
     async def _execute_action(
         self,

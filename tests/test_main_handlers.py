@@ -586,3 +586,467 @@ def test_concurrent_approval_executes_platform_action_only_once():
     assert any("已批准 kick_member" in item for item in results)
     assert any("已被处理" in item for item in results)
     assert plugin.confirm.get(confirm_id) is None
+
+
+# ----------------------------------------------------- 入群申请事件驱动推送
+
+
+class RequestEvent:
+    """最小 request 事件桩。"""
+
+    def __init__(self, platform="aiocqhttp"):
+        self._platform = platform
+
+    def get_platform_name(self):
+        return self._platform
+
+
+def _review_result(outcome, request=None, decision=None):
+    return SimpleNamespace(outcome=outcome, request=request, decision=decision)
+
+
+def _push_wired_plugin(
+    *, outcome="pending_review", push_group_ids=("300",), style="formatted"
+):
+    """组装 _handle_request 事件链路桩：runtime 返回固定 outcome。"""
+    plugin = plugin_instance()
+    plugin._stopped = False
+    plugin.context = None
+    plugin.config = SimpleNamespace(enable_api_guard=False, join_audit_mode="off")
+    plugin.cooldown = SimpleNamespace(check_breaker=lambda: False)
+    plugin.logger = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+    )
+    plugin._ensure_llm_caller = lambda: None
+    request = SimpleNamespace(
+        request_id="r1",
+        platform_id="qq-main",
+        group_id="100",
+        user_id="200",
+        nickname="小明",
+    )
+    decision = SimpleNamespace(verdict="correct", confidence=0.9, reason="答案正确")
+    result = _review_result(outcome, request, decision)
+
+    class StubRuntime:
+        async def handle_event(self, event, raw):
+            return result
+
+    plugin.join_review = StubRuntime()
+    plugin.join_review_store = SimpleNamespace(
+        get_group_config=lambda platform_id, group_id: _async_value(
+            SimpleNamespace(
+                push_group_ids=list(push_group_ids),
+                push_style=style,
+                include_answer=True,
+            )
+        )
+    )
+    return plugin, request, decision
+
+
+async def _async_value(value):
+    return value
+
+
+def test_pending_review_triggers_push_with_persona_llm_caller():
+    """pending_review：按群配置推送，人格按申请所属群 UMO 取，decision 透传，natural 走带人格 LLM。"""
+    plugin, request, decision = _push_wired_plugin(style="natural")
+    persona_calls = []
+    llm_calls = []
+    push_calls = []
+
+    async def persona(umo):
+        persona_calls.append(umo)
+        return "人格 prompt"
+
+    async def push_llm(prompt, system_prompt=""):
+        llm_calls.append((prompt, system_prompt))
+        return "文案"
+
+    class StubPush:
+        async def push_for_request(
+            self, context, req, config, llm_caller, logger, push_decision=None
+        ):
+            assert req is request
+            assert config.push_style == "natural"
+            assert push_decision is decision
+            push_calls.append(config.push_group_ids)
+            assert await llm_caller("p") == "文案"
+            return ["300"], [], []
+
+    plugin._get_push_persona_prompt = persona
+    plugin._call_push_llm = push_llm
+    plugin.request_push = StubPush()
+
+    asyncio.run(plugin._handle_request(RequestEvent(), {"request_type": "group"}))
+
+    assert persona_calls == ["qq-main:GroupMessage:100"]
+    assert llm_calls == [("p", "人格 prompt")]
+    assert push_calls == [["300"]]
+
+
+def test_non_pending_outcomes_do_not_push():
+    """auto_approved / ignored / left_on_platform 不触发推送。"""
+    for outcome in ("auto_approved", "ignored", "left_on_platform"):
+        plugin, _, _ = _push_wired_plugin(outcome=outcome)
+
+        class StubPush:
+            async def push_for_request(self, *args):
+                raise AssertionError("不应推送")
+
+        plugin.request_push = StubPush()
+        asyncio.run(plugin._handle_request(RequestEvent(), {"request_type": "group"}))
+
+
+def test_empty_push_groups_still_push_with_source_group_fallback():
+    """推送群留空不再静默：交给推送服务回退到申请所属群。"""
+    plugin, _, _ = _push_wired_plugin(push_group_ids=())
+    push_calls = []
+
+    async def persona(umo):
+        return ""
+
+    class StubPush:
+        async def push_for_request(
+            self, context, req, config, llm_caller, logger, push_decision=None
+        ):
+            push_calls.append(list(config.push_group_ids))
+            return ["100"], [], []
+
+    plugin._get_push_persona_prompt = persona
+    plugin.request_push = StubPush()
+    asyncio.run(plugin._handle_request(RequestEvent(), {"request_type": "group"}))
+
+    assert push_calls == [[]]
+
+
+def test_guard_stop_skips_push():
+    """紧急停止时不推送，也不影响审核主流程。"""
+    plugin, _, _ = _push_wired_plugin()
+    plugin._stopped = True
+
+    class StubPush:
+        async def push_for_request(self, *args):
+            raise AssertionError("不应推送")
+
+    plugin.request_push = StubPush()
+    asyncio.run(plugin._handle_request(RequestEvent(), {"request_type": "group"}))
+
+
+def test_push_failure_does_not_break_review_flow():
+    """推送服务抛异常只记日志，不向事件处理传播。"""
+    plugin, _, _ = _push_wired_plugin()
+
+    async def persona(umo):
+        return ""
+
+    class FailingPush:
+        async def push_for_request(self, *args):
+            raise RuntimeError("send pipeline down")
+
+    plugin._get_push_persona_prompt = persona
+    plugin.request_push = FailingPush()
+    # 不抛异常即通过
+    asyncio.run(plugin._handle_request(RequestEvent(), {"request_type": "group"}))
+
+
+# ----------------------------------------------------- 引用回复审批
+
+
+class ReplyChain:
+    """MessageChain 桩：记录纯文本链内容。"""
+
+    def __init__(self, chain=None):
+        self.chain = list(chain or [])
+
+
+class ReplyPlain:
+    def __init__(self, text=""):
+        self.text = text
+
+
+# _send_group_reply 延迟导入 astrbot.api 的 MessageChain / Plain，
+# conftest 注册的桩模块缺少这两个符号，这里补齐。
+sys.modules["astrbot.api.event"].MessageChain = ReplyChain
+sys.modules["astrbot.api.message_components"].Plain = ReplyPlain
+
+
+class GroupMessageEvent:
+    """最小群消息事件桩。"""
+
+    def __init__(self, platform_id="qq-main"):
+        self._platform_id = platform_id
+
+    def get_platform_name(self):
+        return "aiocqhttp"
+
+    def get_platform_id(self):
+        return self._platform_id
+
+
+class ReplyContext:
+    """记录 AstrBot send_message 的上下文桩。"""
+
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, umo, chain):
+        self.sent.append((umo, chain))
+        return True
+
+
+def _reply_raw(quoted="1001", text="同意", group_id="300", user_id="500"):
+    raw = {
+        "post_type": "message",
+        "message_type": "group",
+        "group_id": group_id,
+        "user_id": user_id,
+        "message": [
+            {"type": "reply", "data": {"id": quoted}},
+            {"type": "text", "data": {"text": text}},
+        ],
+    }
+    if quoted is None:
+        raw["message"] = [{"type": "text", "data": {"text": text}}]
+    return raw
+
+
+def _reply_wired_plugin(
+    *,
+    role="admin",
+    llm_output='{"decision":"approve"}',
+    request_status="pending",
+    owner_users=(),
+    tracked=True,
+):
+    """组装 _handle_push_reply 链路桩。返回 (plugin, request, 观察字典)。"""
+    plugin = plugin_instance()
+    plugin._stopped = False
+    plugin.config = SimpleNamespace(enabled=True, owner_users=list(owner_users))
+    plugin.logger = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+    )
+    plugin.context = ReplyContext()
+    request = SimpleNamespace(
+        request_id="r1",
+        platform_id="qq-main",
+        group_id="100",
+        user_id="200",
+        status=request_status,
+        platform_error="",
+    )
+    observed = {"find": [], "llm": [], "process": []}
+
+    async def find_ref(platform_id, group_id, message_id):
+        observed["find"].append((platform_id, group_id, message_id))
+        return request if tracked else None
+
+    plugin.join_review_store = SimpleNamespace(find_request_by_push_ref=find_ref)
+
+    async def get_role(event, group_id, user_id):
+        return role
+
+    plugin.identity = SimpleNamespace(get_role=get_role)
+
+    async def audit_llm(prompt):
+        observed["llm"].append(prompt)
+        return llm_output
+
+    plugin._call_audit_llm = audit_llm
+
+    class StubRuntime:
+        async def process_request(self, context, request_id, *, approve, reason=""):
+            observed["process"].append((request_id, approve, reason))
+            return SimpleNamespace(
+                status="approved" if approve else "rejected", platform_error=""
+            )
+
+    plugin.join_review = StubRuntime()
+    return plugin, request, observed
+
+
+def _run_reply(plugin, raw=None, event=None):
+    raw = raw if raw is not None else _reply_raw()
+    event = event or GroupMessageEvent()
+    return asyncio.run(plugin._handle_push_reply(event, raw))
+
+
+def _sent_texts(plugin):
+    return [chain.chain[0].text for _, chain in plugin.context.sent]
+
+
+def test_reply_without_quote_is_ignored():
+    """普通群消息（无引用段）不进入审批链路。"""
+    plugin, _, observed = _reply_wired_plugin()
+
+    _run_reply(plugin, _reply_raw(quoted=None))
+
+    assert observed["find"] == []
+    assert plugin.context.sent == []
+
+
+def test_reply_to_untracked_message_is_ignored():
+    """引用的是未追踪消息：静默忽略。"""
+    plugin, _, observed = _reply_wired_plugin(tracked=False)
+
+    _run_reply(plugin)
+
+    assert observed["find"] == [("qq-main", "300", "1001")]
+    assert observed["llm"] == []
+    assert plugin.context.sent == []
+
+
+def test_reply_from_plain_member_is_silent():
+    """普通成员引用回复：无权限，静默不处理。"""
+    plugin, _, observed = _reply_wired_plugin(role="member")
+
+    _run_reply(plugin)
+
+    assert observed["llm"] == []
+    assert observed["process"] == []
+    assert plugin.context.sent == []
+
+
+def test_owner_user_bypasses_role_check():
+    """bot 主人即使不是群管理也可审批。"""
+    plugin, _, observed = _reply_wired_plugin(role="member", owner_users=("500",))
+
+    _run_reply(plugin)
+
+    assert observed["process"] == [("r1", True, "")]
+
+
+def test_reply_for_processed_request_gets_notice():
+    """申请已终态：回复「该申请已被处理」，不再走 LLM 判断。"""
+    plugin, _, observed = _reply_wired_plugin(request_status="approved")
+
+    _run_reply(plugin)
+
+    assert observed["llm"] == []
+    assert observed["process"] == []
+    assert [umo for umo, _ in plugin.context.sent] == ["qq-main:GroupMessage:300"]
+    assert _sent_texts(plugin) == ["该申请已被处理。"]
+
+
+@pytest.mark.parametrize(
+    "llm_output",
+    ['{"decision":"unclear"}', "看不懂的回复", '{"decision":"approve"', "{}"],
+)
+def test_unclear_or_malformed_judgement_is_silent(llm_output):
+    """LLM 判断含糊或输出无法解析：静默，不打扰群。"""
+    plugin, _, observed = _reply_wired_plugin(llm_output=llm_output)
+
+    _run_reply(plugin)
+
+    assert observed["llm"]  # 确实调用了 LLM 判断
+    assert observed["process"] == []
+    assert plugin.context.sent == []
+
+
+def test_approve_reply_processes_and_confirms():
+    """同意：走 process_request 并在群里确认结果。"""
+    plugin, _, observed = _reply_wired_plugin(llm_output='{"decision":"approve"}')
+
+    _run_reply(plugin)
+
+    assert observed["process"] == [("r1", True, "")]
+    assert _sent_texts(plugin) == ["已同意 QQ 200 的入群申请。"]
+
+
+def test_reject_reply_processes_with_fixed_reason():
+    """拒绝：带固定文案 reason 走 process_request。"""
+    plugin, _, observed = _reply_wired_plugin(llm_output='{"decision":"reject"}')
+
+    _run_reply(plugin)
+
+    assert observed["process"] == [("r1", False, "管理员群内拒绝")]
+    assert _sent_texts(plugin) == ["已拒绝 QQ 200 的入群申请。"]
+
+
+def test_not_actionable_reply_reports_processed():
+    """审批竞争失败：回复已被其他管理员处理或已过期。"""
+    # 与 main.py 包内导入保持同一模块对象，保证 except 能捕获。
+    from astrbot_plugin_identity_guardian.core.join_review_store import (
+        RequestNotActionable,
+    )
+
+    plugin, _, _ = _reply_wired_plugin()
+
+    class BusyRuntime:
+        async def process_request(self, context, request_id, *, approve, reason=""):
+            raise RequestNotActionable("busy")
+
+    plugin.join_review = BusyRuntime()
+    _run_reply(plugin)
+
+    assert _sent_texts(plugin) == ["该申请已被其他管理员处理或已过期。"]
+
+
+def test_platform_failure_reply_reports_reason():
+    """平台失败：回复失败原因并引导到管理页。"""
+    plugin, _, _ = _reply_wired_plugin()
+
+    class FailingRuntime:
+        async def process_request(self, context, request_id, *, approve, reason=""):
+            return SimpleNamespace(
+                status="platform_error", platform_error="permission_denied"
+            )
+
+    plugin.join_review = FailingRuntime()
+    _run_reply(plugin)
+
+    assert _sent_texts(plugin) == ["处理失败：permission_denied，请到管理页处理。"]
+
+
+def test_concurrent_replies_have_single_winner():
+    """两个管理员同时回复：process_request 的一次性语义保证只有一个生效。"""
+    from astrbot_plugin_identity_guardian.core.join_review_store import (
+        RequestNotActionable,
+    )
+
+    plugin, _, observed = _reply_wired_plugin()
+    state = {"won": False}
+
+    async def process_request(context, request_id, *, approve, reason=""):
+        await asyncio.sleep(0)  # 让出事件循环，制造交错
+        observed["process"].append((request_id, approve, reason))
+        if state["won"]:
+            raise RequestNotActionable("busy")
+        state["won"] = True
+        return SimpleNamespace(status="approved", platform_error="")
+
+    plugin.join_review = SimpleNamespace(process_request=process_request)
+
+    async def both():
+        await asyncio.gather(
+            plugin._handle_push_reply(GroupMessageEvent(), _reply_raw(user_id="500")),
+            plugin._handle_push_reply(GroupMessageEvent(), _reply_raw(user_id="501")),
+        )
+
+    # 第二位回复者也需要权限：role=admin 对所有人生效
+    asyncio.run(both())
+
+    assert observed["process"] == [("r1", True, "")] * 2
+    texts = sorted(_sent_texts(plugin))
+    assert texts == ["已同意 QQ 200 的入群申请。", "该申请已被其他管理员处理或已过期。"]
+
+
+def test_on_event_dispatches_group_message_to_push_reply():
+    """on_event 把 group message 事件分发到 _handle_push_reply。"""
+    plugin, _, observed = _reply_wired_plugin()
+    event = GroupMessageEvent()
+    event.message_obj = SimpleNamespace(raw_message=_reply_raw())
+
+    main.IdentityGuardianPlugin._current_instance = plugin
+    try:
+        asyncio.run(plugin.on_event(event))
+    finally:
+        main.IdentityGuardianPlugin._current_instance = None
+
+    assert observed["process"] == [("r1", True, "")]
+    assert _sent_texts(plugin) == ["已同意 QQ 200 的入群申请。"]

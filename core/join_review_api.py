@@ -117,6 +117,12 @@ class JoinReviewPageAPI:
         for target_group_id in specified:
             if (platform_id, str(target_group_id).strip()) not in rows:
                 raise ValidationError("specified_group_not_joined")
+        push_groups = payload.get("push_group_ids", ())
+        if not isinstance(push_groups, (list, tuple)):
+            raise ValidationError("invalid_push_group_ids")
+        for push_group_id in push_groups:
+            if (platform_id, str(push_group_id).strip()) not in rows:
+                raise ValidationError("push_group_not_joined")
 
     async def joined_groups(self) -> Any:
         try:
@@ -171,6 +177,9 @@ class JoinReviewPageAPI:
             "notify_target",
             "specified_group_ids",
             "include_answer",
+            "pinned",
+            "push_group_ids",
+            "push_style",
         }
         if set(payload) != allowed:
             return self._error("invalid_group_config")
@@ -239,6 +248,9 @@ class JoinReviewPageAPI:
                         "notify_target": current.notify_target,
                         "specified_group_ids": list(current.specified_group_ids),
                         "include_answer": current.include_answer,
+                        "pinned": current.pinned,
+                        "push_group_ids": list(current.push_group_ids),
+                        "push_style": current.push_style,
                     }
                 )
             configs = await self.store.batch_upsert_group_configs(updates)

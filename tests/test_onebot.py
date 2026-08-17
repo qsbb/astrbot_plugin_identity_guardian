@@ -117,3 +117,39 @@ def test_set_group_card_reports_failure_on_action_failed():
     )
     assert ok is False
     assert err == "set_group_card failed"
+
+
+def test_send_group_message_with_id_returns_message_id():
+    """推送审批链路依赖 send_group_msg 返回的 message_id。"""
+    event = SimpleNamespace(bot=_Bot({"message_id": 12345}))
+    ok, message_id, err = asyncio.run(
+        OneBotClient().send_group_message_with_id(event, 10001, "推送文案")
+    )
+    assert ok is True
+    assert message_id == "12345"
+    assert err == ""
+
+
+def test_send_group_message_with_id_success_without_id():
+    """写操作 data 为 null（拆包后 None）时视为成功但无 message_id。"""
+    event = SimpleNamespace(bot=_Bot(None))
+    ok, message_id, err = asyncio.run(
+        OneBotClient().send_group_message_with_id(event, 10001, "推送文案")
+    )
+    assert (ok, message_id, err) == (True, "", "")
+
+
+def test_send_group_message_with_id_failure():
+    exc = _ActionFailed({"retcode": 100, "wording": "权限不足"})
+    event = SimpleNamespace(bot=_RaisingBot(exc))
+    ok, message_id, err = asyncio.run(
+        OneBotClient().send_group_message_with_id(event, 10001, "推送文案")
+    )
+    assert (ok, message_id, err) == (False, "", "send_group_msg failed")
+
+
+def test_send_group_message_keeps_legacy_signature():
+    """原 send_group_message 仍返回 (ok, err)，供 join_notification 使用。"""
+    event = SimpleNamespace(bot=_Bot({"message_id": 12345}))
+    ok, err = asyncio.run(OneBotClient().send_group_message(event, 10001, "通知"))
+    assert (ok, err) == (True, "")

@@ -41,10 +41,14 @@ def test_page_exposes_join_review_api_contract_and_scoped_fields():
         "notify_target",
         "specified_group_ids",
         "include_answer",
+        "pinned",
+        "push_group_ids",
+        "push_style",
     ):
         assert field in js
     assert 'runBatch("apply_legacy")' in js
     assert "legacyAvailable" in js
+    assert "row-pinned" in js
 
 
 def test_page_does_not_render_or_submit_onebot_flag():
@@ -79,6 +83,29 @@ def test_page_validates_whitelist_and_unknown_optional_profile_fields():
     assert 'stringValue(request.nickname) || "未知"' in js
     assert 'stringValue(request.level) || "未知"' in js
     assert '"已按群配置隐藏"' in js
+
+
+def test_page_group_settings_popover():
+    """群配置表瘦身为 5 列，细分设置收进点击群名打开的悬浮窗。"""
+    html = read_page("index.html")
+    js = read_page("app.js")
+    css = read_page("style.css")
+    assert 'id="group-popover"' in html
+    assert 'colspan="5"' in html
+    assert 'colspan="14"' not in html
+    # 行内只保留群名/操作入口，编辑控件全部移入悬浮窗
+    assert "data-open-settings" in js
+    assert "openGroupPopover" in js
+    assert "closeGroupPopover" in js
+    assert "renderOpenPopover" in js
+    assert "state.popoverKey" in js
+    assert "configPayloadFromForm" in js
+    assert "data-popover-save" in js
+    assert "data-popover-cancel" in js
+    assert '"Escape"' in js
+    assert 'apiPost("groups/update", payload)' in js
+    assert ".group-popover" in css
+    assert ".group-link" in css
 
 
 def test_mobile_layout_uses_non_overlapping_labeled_rows():

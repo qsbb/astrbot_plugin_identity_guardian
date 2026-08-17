@@ -174,12 +174,26 @@ class OneBotClient:
         self, target: Any, group_id: int, message: str
     ) -> tuple[bool, str]:
         """Send plain text to a group through an event or runtime Bot."""
+        ok, _, err = await self.send_group_message_with_id(target, group_id, message)
+        return ok, err
+
+    async def send_group_message_with_id(
+        self, target: Any, group_id: int, message: str
+    ) -> tuple[bool, str, str]:
+        """Send plain text to a group, returning (ok, message_id, error).
+
+        OneBot V11 ``send_group_msg`` 成功时 data 带 ``message_id``，引用回复
+        审批需要它追踪推送消息；取不到 message_id 时返回空串但视为发送成功。
+        """
         result = await self._call_target(
             target, "send_group_msg", group_id=group_id, message=message
         )
-        if result is not None:
-            return True, ""
-        return False, "send_group_msg failed"
+        if result is None:
+            return False, "", "send_group_msg failed"
+        message_id = ""
+        if isinstance(result, dict):
+            message_id = str(result.get("message_id") or "")
+        return True, message_id, ""
 
     async def set_group_add_request_for_bot(
         self,

@@ -347,3 +347,127 @@ def test_close_releases_process_local_claims(tmp_path):
 
     assert run(store.claim_request(request.request_id)) is not None
     assert run(store.claim_notification(request.request_id, "bot-a:90001")) is not None
+
+
+def test_pinned_and_push_groups_roundtrip_and_validation(tmp_path):
+    """按群置顶标记与推送群列表持久化，且推送群逐条严格校验。"""
+    store = JoinReviewStore(tmp_path)
+    run(
+        store.upsert_group_config(
+            platform_id="bot-a",
+            group_id="10001",
+            pinned=True,
+            push_group_ids=["90001", "90001", "90002"],
+            push_style="natural",
+        )
+    )
+
+    reloaded = JoinReviewStore(tmp_path)
+    config = run(reloaded.get_group_config("bot-a", "10001"))
+
+    assert config.pinned is True
+    assert config.push_group_ids == ("90001", "90002")
+    assert config.push_style == "natural"
+    assert config.to_dict()["push_group_ids"] == ["90001", "90002"]
+
+    other = run(reloaded.get_group_config("bot-a", "10002"))
+    assert other.pinned is False
+    assert other.push_group_ids == ()
+    assert other.push_style == "formatted"
+
+    with pytest.raises(ValidationError, match="invalid_push_group_id"):
+        run(
+            store.upsert_group_config(
+                platform_id="bot-a",
+                group_id="10001",
+                push_group_ids=["not-a-group"],
+            )
+        )
+    with pytest.raises(ValidationError, match="invalid_push_style"):
+        run(
+            store.upsert_group_config(
+                platform_id="bot-a",
+                group_id="10001",
+                push_style="fancy",
+            )
+        )
+
+
+# ----------------------------------------------------- 推送消息映射（push_refs）
+
+
+def _add_pending_request(store, **overrides):
+    values = {
+        "platform_id": "bot-a",
+        "group_id": "10001",
+        "user_id": "20001",
+        "nickname": "小明",
+        "flag": "flag-1",
+    }
+    values.update(overrides)
+    return run(store.add_request(**values))
+
+
+def test_push_ref_record_find_and_persist(tmp_path):
+    store = JoinReviewStore(tmp_path)
+    request = _add_pending_request(store)
+
+    assert run(store.record_push_ref(request.request_id, "30001", "1001")) is True
+    # 幂等：重复记录同一映射不翻倍
+    assert run(store.record_push_ref(request.request_id, "30001", "1001")) is True
+    assert run(store.record_push_ref(request.request_id, "30002", "1002")) is True
+
+    found = run(store.find_request_by_push_ref("bot-a", "30001", "1001"))
+    assert found is not None and found.request_id == request.request_id
+    found = run(store.find_request_by_push_ref("bot-a", "30002", "1002"))
+    assert found is not None and found.request_id == request.request_id
+
+    # 重载后映射仍在
+    reloaded = JoinReviewStore(tmp_path)
+    found = run(reloaded.find_request_by_push_ref("bot-a", "30002", "1002"))
+    assert found is not None and found.request_id == request.request_id
+    assert {tuple(sorted(ref.items())) for ref in found.push_refs} == {
+        (("group_id", "30001"), ("message_id", "1001")),
+        (("group_id", "30002"), ("message_id", "1002")),
+    }
+
+
+def test_push_ref_find_misses_on_wrong_scope(tmp_path):
+    store = JoinReviewStore(tmp_path)
+    request = _add_pending_request(store)
+    run(store.record_push_ref(request.request_id, "30001", "1001"))
+
+    assert run(store.find_request_by_push_ref("bot-b", "30001", "1001")) is None
+    assert run(store.find_request_by_push_ref("bot-a", "30002", "1001")) is None
+    assert run(store.find_request_by_push_ref("bot-a", "30001", "9999")) is None
+    with pytest.raises(ValidationError, match="invalid_push_ref_message_id"):
+        run(store.find_request_by_push_ref("bot-a", "30001", ""))
+
+
+def test_push_ref_unknown_request_returns_false(tmp_path):
+    store = JoinReviewStore(tmp_path)
+    assert run(store.record_push_ref("missing", "30001", "1001")) is False
+
+
+def test_push_ref_expires_with_pending_ttl(tmp_path):
+    now = [1000.0]
+    store = JoinReviewStore(tmp_path, ttl_seconds=10, clock=lambda: now[0])
+    request = _add_pending_request(store)
+    run(store.record_push_ref(request.request_id, "30001", "1001"))
+
+    assert run(store.find_request_by_push_ref("bot-a", "30001", "1001")) is not None
+
+    now[0] += 11
+    found = run(store.find_request_by_push_ref("bot-a", "30001", "1001"))
+    # 过期后申请被转为 expired，引用审批按已处理对待
+    assert found is not None and found.status == "expired"
+
+
+def test_push_ref_validation(tmp_path):
+    store = JoinReviewStore(tmp_path)
+    request = _add_pending_request(store)
+
+    with pytest.raises(ValidationError, match="invalid_push_ref_group_id"):
+        run(store.record_push_ref(request.request_id, "not-a-group", "1001"))
+    with pytest.raises(ValidationError, match="invalid_push_ref_message_id"):
+        run(store.record_push_ref(request.request_id, "30001", ""))
