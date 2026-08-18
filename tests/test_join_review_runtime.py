@@ -63,10 +63,12 @@ class Audit:
     def __init__(self, result: AutoAuditResult) -> None:
         self.result = result
         self.calls = 0
+        self.presets_seen: list = []
 
-    async def execute_auto_audit(self, event, raw):
+    async def execute_auto_audit(self, event, raw, configured_questions=None):
         del event, raw
         self.calls += 1
+        self.presets_seen.append(configured_questions)
         return self.result
 
 
@@ -341,3 +343,21 @@ def test_process_request_runs_when_guard_allows(tmp_path):
 
     assert calls == ["check"]
     assert updated.status == "approved"
+
+
+def test_per_group_presets_passed_to_audit_and_fallback_to_global(tmp_path):
+    """按群 join_questions 传给 audit；该群未配置时传 None 由 audit 回退全局。"""
+    runtime, store, audit, event, _ = make_runtime(tmp_path)
+    configure(
+        store,
+        auto=True,
+        send=False,
+        join_questions=[{"question": "口令？", "answers": ["溪流"]}],
+    )
+    run(runtime.handle_event(event, raw_request()))
+    assert audit.presets_seen == [[{"question": "口令？", "answers": ("溪流",)}]]
+
+    runtime2, store2, audit2, event2, _ = make_runtime(tmp_path / "nogroup")
+    configure(store2, auto=True, send=False)
+    run(runtime2.handle_event(event2, raw_request()))
+    assert audit2.presets_seen == [None]

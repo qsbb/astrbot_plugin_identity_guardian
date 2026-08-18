@@ -230,3 +230,180 @@ def test_approve_only_executes_high_confidence_approval():
     assert svc.should_auto_approve(decision) is True
     assert len(onebot.calls) == 1
     assert onebot.calls[0][1:] == ("request-flag", "add", True, "")
+
+
+# ----------------------------------------------------- execute_auto_audit 三段链路
+
+
+class StubKnowledge:
+    """知识联动桩：返回固定证据列表。"""
+
+    def __init__(self, evidence=()):
+        self._evidence = list(evidence)
+        self.calls = 0
+
+    async def recall_safe(self, query, scope=None):
+        self.calls += 1
+        return self._evidence
+
+
+def _auto_raw(comment="问题：口令？\n答案：溪流"):
+    return {
+        "flag": "f1",
+        "sub_type": "add",
+        "user_id": 1,
+        "group_id": 2,
+        "comment": comment,
+    }
+
+
+def test_auto_audit_preset_exact_match_approves_without_llm():
+    """预设精确命中：直接批准，不需要 LLM。"""
+
+    async def llm(prompt):
+        raise AssertionError("不应调用 LLM")
+
+    svc = _make_service(_make_config(join_questions=[]), llm_caller=llm)
+    onebot = RecordingOneBot()
+    svc.onebot = onebot
+
+    result = asyncio.run(
+        svc.execute_auto_audit(
+            object(),
+            _auto_raw(),
+            configured_questions=[{"question": "口令？", "answers": ["溪流"]}],
+        )
+    )
+
+    assert result.platform_approved is True
+    assert len(onebot.calls) == 1
+
+
+def test_auto_audit_preset_llm_semantic_match_approves():
+    """预设精确/模糊不中：LLM 对预设答案语义比对命中后批准。"""
+    calls = []
+
+    async def llm(prompt):
+        calls.append(prompt)
+        return '{"verdict": "correct", "confidence": 0.95, "reason": "语义一致"}'
+
+    svc = _make_service(_make_config(join_questions=[]), llm_caller=llm)
+    onebot = RecordingOneBot()
+    svc.onebot = onebot
+
+    result = asyncio.run(
+        svc.execute_auto_audit(
+            object(),
+            _auto_raw("问题：口令？\n答案：小河"),
+            configured_questions=[{"question": "口令？", "answers": ["溪流"]}],
+        )
+    )
+
+    assert result.platform_approved is True
+    assert len(calls) == 1
+    assert "溪流" in calls[0]  # 预设答案进入 LLM 判定 prompt
+
+
+def test_auto_audit_knowledge_evidence_approves_after_preset_miss():
+    """预设不中 → 知识证据命中：带证据 LLM 判断批准后放行。"""
+    calls = []
+
+    async def llm(prompt):
+        calls.append(prompt)
+        if "大佬说过" in prompt:
+            return '{"verdict": "correct", "confidence": 0.95, "reason": "证据支持"}'
+        return '{"verdict": "uncertain", "confidence": 0.3, "reason": "预设不像"}'
+
+    svc = _make_service(
+        _make_config(join_questions=[], enable_active_learner_recall=True),
+        llm_caller=llm,
+    )
+    svc.knowledge = StubKnowledge(evidence=["群里大佬说过答案是溪流"])
+    onebot = RecordingOneBot()
+    svc.onebot = onebot
+
+    result = asyncio.run(
+        svc.execute_auto_audit(
+            object(),
+            _auto_raw("问题：口令？\n答案：小河"),
+            configured_questions=[{"question": "口令？", "answers": ["鹅卵石"]}],
+        )
+    )
+
+    assert result.platform_approved is True
+    assert svc.knowledge.calls == 1
+    assert len(calls) == 2  # 预设语义一次 + 知识证据一次
+
+
+def test_auto_audit_preset_miss_and_no_evidence_falls_back_uncertain():
+    """预设不中 + 知识无证据：UNCERTAIN 兜底，不放行。"""
+    svc = _make_service(
+        _make_config(join_questions=[], enable_active_learner_recall=True),
+        llm_caller=lambda prompt: asyncio.sleep(
+            0, '{"verdict": "uncertain", "confidence": 0.3, "reason": "不像"}'
+        ),
+    )
+    svc.knowledge = StubKnowledge(evidence=[])
+    onebot = RecordingOneBot()
+    svc.onebot = onebot
+
+    result = asyncio.run(
+        svc.execute_auto_audit(
+            object(),
+            _auto_raw("问题：口令？\n答案：小河"),
+            configured_questions=[{"question": "口令？", "answers": ["鹅卵石"]}],
+        )
+    )
+
+    assert result.decision.verdict == JoinVerdict.UNCERTAIN.value
+    assert "无知识证据" in result.decision.reason
+    assert result.platform_approved is False
+    assert onebot.calls == []
+
+
+def test_auto_audit_no_presets_no_recall_uncertain_without_llm():
+    """无预设且联动关闭：直接 UNCERTAIN，且绝不调用 LLM 自由判断。"""
+
+    async def llm(prompt):
+        raise AssertionError("无预设无证据时不得调用 LLM")
+
+    svc = _make_service(_make_config(join_questions=[]), llm_caller=llm)
+    onebot = RecordingOneBot()
+    svc.onebot = onebot
+
+    result = asyncio.run(svc.execute_auto_audit(object(), _auto_raw()))
+
+    assert result.decision.verdict == JoinVerdict.UNCERTAIN.value
+    assert result.decision.reason == "无预设答案且无知识证据"
+    assert onebot.calls == []
+
+
+def test_auto_audit_per_group_presets_take_priority_over_global():
+    """按群预设优先于全局回退；configured_questions=None 时回退全局。"""
+    calls = []
+
+    async def llm(prompt):
+        calls.append(prompt)
+        return '{"verdict": "uncertain", "confidence": 0.3, "reason": "不像"}'
+
+    svc = _make_service(_make_config(join_questions=["口令？|溪流"]), llm_caller=llm)
+    onebot = RecordingOneBot()
+    svc.onebot = onebot
+
+    # 按群预设存在时，全局预设不参与判定
+    result = asyncio.run(
+        svc.execute_auto_audit(
+            object(),
+            _auto_raw("问题：口令？\n答案：别的"),
+            configured_questions=[{"question": "口令？", "answers": ["按群答案"]}],
+        )
+    )
+    assert result.decision.verdict == JoinVerdict.UNCERTAIN.value
+    assert "按群答案" in calls[0]
+    assert "溪流" not in calls[0].split("参考答案")[1]
+
+    # configured_questions=None：回退全局预设，精确命中直接批准
+    result2 = asyncio.run(
+        svc.execute_auto_audit(object(), _auto_raw(), configured_questions=None)
+    )
+    assert result2.platform_approved is True

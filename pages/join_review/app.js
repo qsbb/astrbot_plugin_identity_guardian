@@ -31,6 +31,9 @@ const API_ERROR_MESSAGES = {
   specified_groups_required: "通知到指定群时，必须填写审核群白名单",
   push_group_not_joined: "推送群必须是当前 Bot 已加入的群",
   invalid_push_style: "推送样式无效",
+  invalid_join_questions: "入群问答预设格式不正确",
+  join_question_answers_required: "每条入群问答预设至少要有一条参考答案",
+  too_many_join_questions: "入群问答预设最多 50 条",
   duplicate_group_config: "批量配置中包含重复群",
   expired: "该申请已过期，不能继续处理",
   already_processed: "该申请已由其他管理员处理",
@@ -163,6 +166,14 @@ function normalizeGroup(item, configured = false) {
     push_style: ["formatted", "natural"].includes(merged.push_style)
       ? merged.push_style
       : "formatted",
+    join_questions: Array.isArray(merged.join_questions)
+      ? merged.join_questions
+        .filter((item) => item && typeof item === "object")
+        .map((item) => ({
+          question: stringValue(item.question),
+          answers: Array.isArray(item.answers) ? item.answers.map(String) : [],
+        }))
+      : [],
     pending_count: Number.isFinite(Number(merged.pending_count)) ? Number(merged.pending_count) : 0,
     joined: merged.joined !== false && !configured,
   };
@@ -319,6 +330,14 @@ function popoverElement() {
   return $("#group-popover");
 }
 
+function jqItemMarkup(item, disabled) {
+  return `<div class="jq-item" data-jq-item>
+    <input class="group-whitelist editable-control" data-jq-question type="text" maxlength="2048" placeholder="入群问题（留空 = 匹配任意问题）" value="${escapeHtml(item.question)}"${disabled ? " disabled" : ""}>
+    <textarea class="group-whitelist jq-answers editable-control" data-jq-answers rows="2" maxlength="2048" placeholder="参考答案，每行一个"${disabled ? " disabled" : ""}>${escapeHtml(item.answers.join("\n"))}</textarea>
+    <button class="button compact danger-quiet" type="button" data-jq-remove${disabled ? " disabled" : ""}>删除</button>
+  </div>`;
+}
+
 function popoverFieldMarkup(group, disabled) {
   const notificationDisabled = group.notify_target === "target_group" || disabled;
   return `
@@ -342,6 +361,11 @@ function popoverFieldMarkup(group, disabled) {
       <option value="formatted"${group.push_style === "formatted" ? " selected" : ""}>格式化</option>
       <option value="natural"${group.push_style === "natural" ? " selected" : ""}>自然语言</option>
     </select></label>
+    <div class="popover-field jq-editor">
+      <span>入群问答预设（问题留空 = 匹配任意问题；答案每行一个）</span>
+      <div class="jq-list" data-jq-list>${group.join_questions.map((item) => jqItemMarkup(item, disabled)).join("")}</div>
+      <button class="button compact secondary" type="button" data-jq-add${disabled ? " disabled" : ""}>+ 添加预设</button>
+    </div>
   </div>
   <div class="field-error" data-row-error></div>
   <div class="popover-actions">
@@ -541,6 +565,18 @@ function configPayloadFromForm(container) {
   if (!["formatted", "natural"].includes(pushStyle)) {
     throw new Error("推送样式无效");
   }
+  const joinQuestions = [];
+  for (const item of $all("[data-jq-item]", container)) {
+    const question = $("[data-jq-question]", item).value.trim();
+    const answers = Array.from(new Set(
+      $("[data-jq-answers]", item).value.split(/\n+/).map((line) => line.trim()).filter(Boolean),
+    ));
+    if (!question && answers.length === 0) continue; // 完全空白的条目视为未添加
+    if (answers.length === 0) throw new Error("每条入群问答预设至少要有一条参考答案");
+    if (answers.some((answer) => answer.length > 2048)) throw new Error("参考答案单条最长 2048 字");
+    joinQuestions.push({ question, answers });
+  }
+  if (joinQuestions.length > 50) throw new Error("入群问答预设最多 50 条");
   return {
     platform_id: group.platform_id,
     group_id: group.group_id,
@@ -552,6 +588,7 @@ function configPayloadFromForm(container) {
     pinned: $("[data-field='pinned']", container).checked,
     push_group_ids: parseGroupIdList($("[data-field='push_group_ids']", container).value, "推送群号"),
     push_style: pushStyle,
+    join_questions: joinQuestions,
   };
 }
 
@@ -774,6 +811,17 @@ function bindEvents() {
   popover.addEventListener("input", () => showFormError(popover, ""));
 
   popover.addEventListener("click", (event) => {
+    if (event.target.closest("[data-jq-add]")) {
+      // 增删只动 DOM，保存时才随 configPayloadFromForm 采集校验。
+      const list = $("[data-jq-list]", popover);
+      list.insertAdjacentHTML("beforeend", jqItemMarkup({ question: "", answers: [] }, false));
+      return;
+    }
+    const jqRemove = event.target.closest("[data-jq-remove]");
+    if (jqRemove) {
+      jqRemove.closest("[data-jq-item]")?.remove();
+      return;
+    }
     if (event.target.closest("[data-popover-save]")) {
       saveGroup(popover);
       return;

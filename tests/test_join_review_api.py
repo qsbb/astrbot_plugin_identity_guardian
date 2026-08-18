@@ -127,6 +127,7 @@ def test_single_update_is_strict_and_persists_only_joined_reviewable_group(
         "pinned": True,
         "push_group_ids": ["300"],
         "push_style": "natural",
+        "join_questions": [{"question": "口令？", "answers": ["溪流", "小溪"]}],
     }
     monkeypatch.setattr(api_module, "request", FakeRequest(payload))
     result = response_data(run(api.update_group()))
@@ -139,6 +140,9 @@ def test_single_update_is_strict_and_persists_only_joined_reviewable_group(
     assert stored.pinned is True
     assert stored.push_group_ids == ("300",)
     assert stored.push_style == "natural"
+    assert stored.join_questions == (
+        {"question": "口令？", "answers": ("溪流", "小溪")},
+    )
 
     monkeypatch.setattr(
         api_module,
@@ -164,6 +168,7 @@ def test_push_group_ids_must_be_joined_groups(tmp_path, monkeypatch):
         "pinned": False,
         "push_group_ids": ["999"],
         "push_style": "formatted",
+        "join_questions": [],
     }
     monkeypatch.setattr(api_module, "request", FakeRequest(payload))
     result = response_data(run(api.update_group()))
@@ -173,7 +178,7 @@ def test_push_group_ids_must_be_joined_groups(tmp_path, monkeypatch):
 
 
 def test_batch_preserves_pinned_and_push_groups(tmp_path, monkeypatch):
-    """批量操作保留按群的置顶与推送群配置。"""
+    """批量操作保留按群的置顶、推送群与问答预设配置。"""
     api, store, _, _ = make_api(tmp_path)
     run(
         store.upsert_group_config(
@@ -181,6 +186,7 @@ def test_batch_preserves_pinned_and_push_groups(tmp_path, monkeypatch):
             group_id="100",
             pinned=True,
             push_group_ids=["300"],
+            join_questions=[{"question": "", "answers": ["溪流"]}],
         )
     )
     monkeypatch.setattr(
@@ -198,6 +204,7 @@ def test_batch_preserves_pinned_and_push_groups(tmp_path, monkeypatch):
     assert stored.auto_audit_enabled is True
     assert stored.pinned is True
     assert stored.push_group_ids == ("300",)
+    assert stored.join_questions == ({"question": "", "answers": ("溪流",)},)
 
 
 def test_batch_add_and_explicit_legacy_application(tmp_path, monkeypatch):

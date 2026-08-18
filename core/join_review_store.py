@@ -37,6 +37,8 @@ MAX_SPECIFIED_GROUPS = 100
 PUSH_STYLES = frozenset({"formatted", "natural"})
 MAX_PUSH_REFS = 200
 MAX_MESSAGE_ID_LENGTH = 64
+MAX_JOIN_QUESTIONS = 50
+MAX_JOIN_QUESTION_ANSWERS = 50
 
 _DECIMAL_ID_RE = re.compile(r"^[1-9][0-9]{0,19}$")
 
@@ -121,6 +123,46 @@ def _normalize_timestamp(value: Any, field_name: str) -> float:
     return result
 
 
+def _normalize_join_questions(value: Any) -> tuple[dict[str, Any], ...]:
+    """Validate per-group join-question presets: [{question, answers}].
+
+    question 允许空串（匹配任意入群问题）；answers 去空去重，至少一条。
+    """
+    if isinstance(value, (str, bytes)):
+        raise ValidationError("invalid_join_questions")
+    try:
+        raw_items = list(value)
+    except TypeError as exc:
+        raise ValidationError("invalid_join_questions") from exc
+    if len(raw_items) > MAX_JOIN_QUESTIONS:
+        raise ValidationError("too_many_join_questions")
+    items: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, Mapping):
+            raise ValidationError("invalid_join_question")
+        question = _normalize_optional_text(
+            item.get("question"), "join_question", MAX_TEXT_LENGTH
+        )
+        raw_answers = item.get("answers", ())
+        if isinstance(raw_answers, (str, bytes)):
+            raise ValidationError("invalid_join_question_answers")
+        try:
+            answer_values = list(raw_answers)
+        except TypeError as exc:
+            raise ValidationError("invalid_join_question_answers") from exc
+        stripped = [str(a).strip() for a in answer_values if str(a).strip()]
+        for answer in stripped:
+            if len(answer) > MAX_TEXT_LENGTH:
+                raise ValidationError("join_question_answer_too_long")
+        answers = tuple(dict.fromkeys(stripped))
+        if not answers:
+            raise ValidationError("join_question_answers_required")
+        if len(answers) > MAX_JOIN_QUESTION_ANSWERS:
+            raise ValidationError("too_many_join_question_answers")
+        items.append({"question": question, "answers": answers})
+    return tuple(items)
+
+
 def _normalize_push_refs(value: Any) -> tuple[dict[str, str], ...]:
     """Validate push-message refs: iterable of {group_id, message_id} mappings."""
     if isinstance(value, (str, bytes)):
@@ -162,6 +204,8 @@ class GroupReviewConfig:
     pinned: bool = False
     push_group_ids: tuple[str, ...] = ()
     push_style: str = "formatted"
+    # 按群入群问答预设：{"question": str(可空=任意问题), "answers": tuple[str, ...]}
+    join_questions: tuple[dict[str, Any], ...] = ()
     created_at: float = 0.0
     updated_at: float = 0.0
     configured: bool = True
@@ -189,6 +233,7 @@ class GroupReviewConfig:
         pinned: Any = False,
         push_group_ids: Iterable[Any] = (),
         push_style: Any = "formatted",
+        join_questions: Iterable[Any] = (),
         created_at: Any = 0.0,
         updated_at: Any = 0.0,
         configured: bool = True,
@@ -243,6 +288,7 @@ class GroupReviewConfig:
             pinned=_normalize_bool(pinned, "pinned"),
             push_group_ids=push_groups,
             push_style=style,
+            join_questions=_normalize_join_questions(join_questions),
             created_at=_normalize_timestamp(created_at, "created_at"),
             updated_at=_normalize_timestamp(updated_at, "updated_at"),
             configured=bool(configured),
@@ -252,6 +298,10 @@ class GroupReviewConfig:
         value = asdict(self)
         value["specified_group_ids"] = list(self.specified_group_ids)
         value["push_group_ids"] = list(self.push_group_ids)
+        value["join_questions"] = [
+            {"question": item["question"], "answers": list(item["answers"])}
+            for item in self.join_questions
+        ]
         return value
 
     @property
@@ -531,6 +581,7 @@ class JoinReviewStore:
         pinned: Any = False,
         push_group_ids: Iterable[Any] = (),
         push_style: Any = "formatted",
+        join_questions: Iterable[Any] = (),
     ) -> GroupReviewConfig:
         now = self._clock()
         key = (normalize_platform_id(platform_id), normalize_qq_id(group_id))
@@ -547,6 +598,7 @@ class JoinReviewStore:
                 pinned=pinned,
                 push_group_ids=push_group_ids,
                 push_style=push_style,
+                join_questions=join_questions,
                 created_at=old.created_at if old is not None else now,
                 updated_at=now,
             )
@@ -591,6 +643,7 @@ class JoinReviewStore:
                     "pinned",
                     "push_group_ids",
                     "push_style",
+                    "join_questions",
                 }
                 if unexpected:
                     raise ValidationError("unexpected_group_config_fields")
@@ -616,6 +669,7 @@ class JoinReviewStore:
                         pinned=item.get("pinned", False),
                         push_group_ids=item.get("push_group_ids", ()),
                         push_style=item.get("push_style", "formatted"),
+                        join_questions=item.get("join_questions", ()),
                         created_at=old.created_at if old is not None else now,
                         updated_at=now,
                     )

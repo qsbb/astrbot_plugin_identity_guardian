@@ -1058,3 +1058,45 @@ input[type="checkbox"] {
     width: auto;
   }
 }
+
+/* 悬浮窗内的入群问答预设编辑区 */
+.jq-editor > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.jq-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.jq-item {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  padding: 10px;
+  background: var(--panel-3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+}
+
+.jq-item [data-jq-remove] {
+  justify-self: end;
+}
+
+.jq-answers {
+  resize: vertical;
+  min-height: 52px;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+
+.jq-answers:focus {
+  outline: none;
+  border-color: var(--accent);
+}

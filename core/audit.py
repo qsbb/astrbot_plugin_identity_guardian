@@ -253,42 +253,146 @@ class JoinAuditService:
             and decision.confidence >= self.config.join_approve_threshold
         )
 
+    async def _judge_against_presets(
+        self,
+        question: str,
+        answer: str,
+        presets: list[Any],
+    ) -> JoinDecision | None:
+        """LLM 语义比对「申请人答案 vs 适用预设答案」。
+
+        预设项 question 为空时适用于任意问题；非空时与事件问题做包含式
+        模糊匹配（与 ``_match_configured`` 同思路）。无 LLM、无适用预设
+        答案或调用失败时返回 None，让调用方进入下一段判定。
+        """
+        if self._llm_caller is None:
+            return None
+        reference_answers: list[str] = []
+        for q in presets:
+            if not isinstance(q, dict):
+                continue
+            q_text = str(q.get("question", "")).strip()
+            if (
+                q_text
+                and question
+                and q_text not in question
+                and question not in q_text
+            ):
+                continue
+            reference_answers.extend(
+                str(a).strip() for a in q.get("answers", []) if str(a).strip()
+            )
+        if not reference_answers:
+            return None
+        prompt = build_answer_judge_prompt(
+            question=question,
+            answer=answer,
+            reference_answers=reference_answers,
+            evidence="",
+        )
+        try:
+            return self._parse_llm_judgment(await self._llm_caller(prompt))
+        except Exception as exc:
+            logger.warning("[idg] join audit preset LLM failed: %s", type(exc).__name__)
+            return None
+
+    async def _judge_with_knowledge(
+        self, question: str, answer: str, group_id: str
+    ) -> JoinDecision | None:
+        """知联动判定：有证据才调 LLM；无证据/联动关闭/查询失败返回 None。"""
+        if not self.config.enable_active_learner_recall or self._llm_caller is None:
+            return None
+        try:
+            evidence = await self.knowledge.recall_safe(
+                query=f"{question}\n{answer}", scope=group_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "[idg] join audit knowledge recall failed: %s", type(exc).__name__
+            )
+            return None
+        if not evidence:
+            return None
+        evidence_text = "; ".join(
+            str(getattr(e, "content", e)) if not isinstance(e, str) else e
+            for e in evidence[:5]
+        )
+        prompt = build_answer_judge_prompt(
+            question=question,
+            answer=answer,
+            reference_answers=[],
+            evidence=evidence_text,
+        )
+        try:
+            return self._parse_llm_judgment(await self._llm_caller(prompt))
+        except Exception as exc:
+            logger.warning(
+                "[idg] join audit knowledge LLM failed: %s", type(exc).__name__
+            )
+            return None
+
     async def execute_auto_audit(
         self,
         event: Any,
         raw: dict[str, Any],
+        configured_questions: list[Any] | None = None,
     ) -> AutoAuditResult:
-        """Judge and, when eligible, attempt approval without ever rejecting."""
+        """Judge and, when eligible, attempt approval without ever rejecting.
+
+        严格三段顺序：
+        1. 预设判定：``configured_questions``（按群预设，None 回退全局
+           ``join_questions``）先精确/模糊匹配，不中再用 LLM 对预设答案做
+           语义比对；该群与全局都无预设则直接进 2。
+        2. 知联动判定：有知识证据才调 LLM 带证据判断。
+        3. 兜底：都无高置信结果时返回 UNCERTAIN，不再让 LLM 在无参考
+           答案、无知识证据的情况下自由判断。
+        """
         flag, sub_type, user_id, group_id, answer = self.parse_request(raw)
         question = self.extract_question(str(raw.get("comment", "")))
 
-        evidence: list[Any] = []
-        if self.config.enable_active_learner_recall:
-            try:
-                evidence = await self.knowledge.recall_safe(
-                    query=f"{question}\n{answer}", scope=group_id
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[idg] join audit knowledge recall failed: %s",
-                    type(exc).__name__,
-                )
-                decision = JoinDecision(
-                    verdict=JoinVerdict.UNAVAILABLE.value,
+        if not answer:
+            return AutoAuditResult(
+                decision=JoinDecision(
+                    verdict=JoinVerdict.UNCERTAIN.value,
                     confidence=0.0,
-                    reason="知识联动失败",
+                    reason="答案为空",
                 )
-                return AutoAuditResult(
-                    decision=decision, platform_error="knowledge_error"
-                )
+            )
 
-        decision = await self.judge_answer(
-            question=question,
-            answer=answer,
-            configured_questions=self.config.join_questions,
-            evidence=evidence,
+        presets = (
+            list(configured_questions)
+            if configured_questions is not None
+            else self.config.join_questions
         )
-        if not self.is_approvable(decision):
+
+        # 1. 预设判定
+        decision: JoinDecision | None = None
+        if presets:
+            matched = self._match_configured(question, answer, presets)
+            if matched.verdict == JoinVerdict.CORRECT.value:
+                decision = matched
+            else:
+                decision = await self._judge_against_presets(question, answer, presets)
+
+        # 2. 知联动判定
+        if decision is None or not self.is_approvable(decision):
+            knowledge_decision = await self._judge_with_knowledge(
+                question, answer, group_id
+            )
+            if knowledge_decision is not None and self.is_approvable(
+                knowledge_decision
+            ):
+                decision = knowledge_decision
+
+        # 3. 兜底：无高置信结果，转忽略/人工
+        if decision is None or not self.is_approvable(decision):
+            decision = JoinDecision(
+                verdict=JoinVerdict.UNCERTAIN.value,
+                confidence=0.2,
+                reason="未匹配预设答案且无知识证据"
+                if presets
+                else "无预设答案且无知识证据",
+            )
             return AutoAuditResult(decision=decision)
 
         ok, err = await self.onebot.set_group_add_request(

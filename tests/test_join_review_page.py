@@ -44,6 +44,7 @@ def test_page_exposes_join_review_api_contract_and_scoped_fields():
         "pinned",
         "push_group_ids",
         "push_style",
+        "join_questions",
     ):
         assert field in js
     assert 'runBatch("apply_legacy")' in js
@@ -106,6 +107,22 @@ def test_page_group_settings_popover():
     assert 'apiPost("groups/update", payload)' in js
     assert ".group-popover" in css
     assert ".group-link" in css
+
+
+def test_popover_has_join_question_preset_editor():
+    """悬浮窗内的入群问答预设编辑区：增删条目、问题可留空、答案每行一个。"""
+    js = read_page("app.js")
+    css = read_page("style.css")
+    assert "data-jq-list" in js
+    assert "data-jq-item" in js
+    assert "data-jq-question" in js
+    assert "data-jq-answers" in js
+    assert "data-jq-add" in js
+    assert "data-jq-remove" in js
+    assert "jqItemMarkup" in js
+    assert "join_questions: joinQuestions" in js
+    assert "每条入群问答预设至少要有一条参考答案" in js
+    assert ".jq-item" in css
 
 
 def test_mobile_layout_uses_non_overlapping_labeled_rows():

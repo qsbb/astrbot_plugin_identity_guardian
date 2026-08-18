@@ -471,3 +471,55 @@ def test_push_ref_validation(tmp_path):
         run(store.record_push_ref(request.request_id, "not-a-group", "1001"))
     with pytest.raises(ValidationError, match="invalid_push_ref_message_id"):
         run(store.record_push_ref(request.request_id, "30001", ""))
+
+
+def test_group_join_questions_roundtrip_and_validation(tmp_path):
+    """按群入群问答预设：去空去重、持久化回读与严格校验。"""
+    store = JoinReviewStore(tmp_path)
+    config = run(
+        store.upsert_group_config(
+            platform_id="bot-a",
+            group_id="10001",
+            join_questions=[
+                {"question": "口令？", "answers": ["溪流", "溪流", "  ", "小溪"]},
+                {"question": "", "answers": ["任意问题答案"]},
+            ],
+        )
+    )
+    assert config.join_questions == (
+        {"question": "口令？", "answers": ("溪流", "小溪")},
+        {"question": "", "answers": ("任意问题答案",)},
+    )
+
+    reloaded = JoinReviewStore(tmp_path)
+    config2 = run(reloaded.get_group_config("bot-a", "10001"))
+    assert config2.join_questions == config.join_questions
+    assert config2.to_dict()["join_questions"] == [
+        {"question": "口令？", "answers": ["溪流", "小溪"]},
+        {"question": "", "answers": ["任意问题答案"]},
+    ]
+
+    with pytest.raises(ValidationError, match="join_question_answers_required"):
+        run(
+            store.upsert_group_config(
+                platform_id="bot-a",
+                group_id="10001",
+                join_questions=[{"question": "口令？", "answers": []}],
+            )
+        )
+    with pytest.raises(ValidationError, match="too_many_join_questions"):
+        run(
+            store.upsert_group_config(
+                platform_id="bot-a",
+                group_id="10001",
+                join_questions=[{"question": "", "answers": ["a"]}] * 51,
+            )
+        )
+    with pytest.raises(ValidationError, match="invalid_join_questions"):
+        run(
+            store.upsert_group_config(
+                platform_id="bot-a",
+                group_id="10001",
+                join_questions="口令？|溪流",
+            )
+        )

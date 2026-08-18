@@ -177,8 +177,12 @@ class JoinReviewRuntime:
 
         audit_result: AutoAuditResult | None = None
         if config.auto_audit_enabled:
+            # 按群问答预设优先；该群未配置时传 None，由 audit 回退全局 join_questions。
+            presets = list(config.join_questions) or None
             try:
-                audit_result = await self.audit.execute_auto_audit(event, raw)
+                audit_result = await self.audit.execute_auto_audit(
+                    event, raw, configured_questions=presets
+                )
             except Exception:
                 audit_result = AutoAuditResult(
                     decision=JoinDecision(

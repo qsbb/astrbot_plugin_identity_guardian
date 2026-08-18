@@ -180,6 +180,7 @@ class JoinReviewPageAPI:
             "pinned",
             "push_group_ids",
             "push_style",
+            "join_questions",
         }
         if set(payload) != allowed:
             return self._error("invalid_group_config")
@@ -251,6 +252,13 @@ class JoinReviewPageAPI:
                         "pinned": current.pinned,
                         "push_group_ids": list(current.push_group_ids),
                         "push_style": current.push_style,
+                        "join_questions": [
+                            {
+                                "question": item["question"],
+                                "answers": list(item["answers"]),
+                            }
+                            for item in current.join_questions
+                        ],
                     }
                 )
             configs = await self.store.batch_upsert_group_configs(updates)
