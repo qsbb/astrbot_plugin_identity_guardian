@@ -437,28 +437,6 @@ function renderSimulateGroupOptions() {
   }
 }
 
-function renderSimulateResult(data) {
-  const result = $("#simulate-result");
-  const stages = Array.isArray(data?.stages) ? data.stages : [];
-  const final = data?.final && typeof data.final === "object" ? data.final : {};
-  const rows = stages.map((stage) => {
-    const stageName = SIMULATE_STAGE_LABELS[stage.stage] || String(stage.stage || "未知阶段");
-    const [outcomeLabel, badgeClass] = SIMULATE_OUTCOME_BADGES[stage.outcome] || [String(stage.outcome || ""), ""];
-    return `<div class="simulate-stage"><span class="status-badge ${badgeClass}">${stageName} · ${outcomeLabel}</span><span class="simulate-detail">${escapeHtml(stage.detail)}</span></div>`;
-  }).join("");
-  const verdict = SIMULATE_VERDICT_LABELS[final.verdict] || String(final.verdict || "未知");
-  const confidence = Number.isFinite(Number(final.confidence)) ? Number(final.confidence).toFixed(2) : "0.00";
-  const would = SIMULATE_WOULD_LABELS[data?.would] || "";
-  const presetsSource = { group: "按群预设", global: "全局回退预设", none: "无预设" }[data?.presets_source] || "";
-  result.innerHTML = `${rows}
-    <div class="simulate-final">
-      <strong>最终结论：${escapeHtml(verdict)}（置信度 ${confidence}）</strong>
-      <span class="simulate-detail">${escapeHtml(final.reason || "")}${presetsSource ? ` · 预设来源：${presetsSource}` : ""}</span>
-      <span class="simulate-would">${escapeHtml(would)}（仅说明，未执行任何操作）</span>
-    </div>`;
-  result.classList.remove("hidden");
-}
-
 async function runSimulate() {
   const button = $("#simulate-run");
   if (button.getAttribute("aria-busy") === "true") return;
