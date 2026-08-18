@@ -521,3 +521,103 @@ def test_simulate_would_ignored_when_both_switches_off(tmp_path, monkeypatch):
     data = result["data"]
     assert data["final"]["verdict"] == "correct"
     assert data["would"] == "ignored"
+
+
+def test_simulate_pending_review_includes_push_preview(tmp_path, monkeypatch):
+    """转人工待审时附推送文案预览：钩子收到申请字段/decision/来源群名。"""
+    api, store, _, bot = make_api(tmp_path)
+    _wire_simulate_audit(api)
+    run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            auto_audit_enabled=True,
+            review_send_enabled=True,
+        )
+    )
+    hook_calls = []
+
+    async def hook(**kwargs):
+        hook_calls.append(kwargs)
+        return {
+            "style": "natural",
+            "text": "预览文案",
+            "persona_used": True,
+            "provider": "push-llm",
+            "contexts_used": 2,
+        }
+
+    api.push_preview = hook
+    monkeypatch.setattr(api_module, "request", FakeRequest(_simulate_payload()))
+    result = response_data(run(api.simulate()))
+
+    data = result["data"]
+    assert data["would"] == "pending_review"
+    assert data["push_preview"] == {
+        "style": "natural",
+        "text": "预览文案",
+        "persona_used": True,
+        "provider": "push-llm",
+        "contexts_used": 2,
+    }
+    (call,) = hook_calls
+    assert call["platform_id"] == "qq-main" and call["group_id"] == "100"
+    assert call["question"] == "口令？" and call["answer"] == "溪流"
+    assert call["source_group_name"] == "群 100"
+    assert isinstance(call["decision"], JoinDecision)
+    assert call["decision"].verdict == data["final"]["verdict"]
+    # 预览零副作用：无待审记录、无平台写操作
+    assert run(store.list_requests()) == []
+    assert not any(
+        action in ("set_group_add_request", "send_group_msg") for action, _ in bot.calls
+    )
+
+
+def test_simulate_non_pending_review_skips_push_preview(tmp_path, monkeypatch):
+    """非 pending_review 不生成预览：钩子不被调用，push_preview 为 None。"""
+    api, store, _, _ = make_api(tmp_path)
+    _wire_simulate_audit(api)
+    run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            auto_audit_enabled=True,
+            review_send_enabled=False,
+            join_questions=[{"question": "口令？", "answers": ["溪流"]}],
+        )
+    )
+
+    async def hook(**kwargs):
+        raise AssertionError("非 pending_review 不应生成预览")
+
+    api.push_preview = hook
+    monkeypatch.setattr(api_module, "request", FakeRequest(_simulate_payload()))
+    result = response_data(run(api.simulate()))
+
+    assert result["data"]["would"] == "approve"
+    assert result["data"]["push_preview"] is None
+
+
+def test_simulate_preview_hook_failure_keeps_diagnosis(tmp_path, monkeypatch):
+    """预览钩子抛异常不影响诊断主结果：push_preview 为 None。"""
+    api, store, _, _ = make_api(tmp_path)
+    _wire_simulate_audit(api)
+    run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            auto_audit_enabled=True,
+            review_send_enabled=True,
+        )
+    )
+
+    async def hook(**kwargs):
+        raise RuntimeError("preview pipeline down")
+
+    api.push_preview = hook
+    monkeypatch.setattr(api_module, "request", FakeRequest(_simulate_payload()))
+    result = response_data(run(api.simulate()))
+
+    assert result["success"] is True
+    assert result["data"]["would"] == "pending_review"
+    assert result["data"]["push_preview"] is None

@@ -147,6 +147,25 @@ def test_page_has_simulate_card():
     assert ".simulate-result" in css
 
 
+def test_page_simulate_result_renders_push_preview():
+    """模拟结果含推送文案预览块：样式徽章、原文、人格/LLM/群消息元信息。"""
+    js = read_page("app.js")
+    css = read_page("style.css")
+    for marker in (
+        "renderSimulatePreview",
+        "SIMULATE_PREVIEW_STYLE_BADGES",
+        "push_preview",
+        "natural_fallback_formatted",
+        "推送文案预览",
+        "该申请不会触发推送，无文案预览",
+        "仅预览，未发送",
+    ):
+        assert marker in js
+    assert ".simulate-preview" in css
+    assert ".simulate-preview-text" in css
+    assert "pre-wrap" in css
+
+
 def test_mobile_layout_uses_non_overlapping_labeled_rows():
     css = read_page("style.css")
     assert "@media (max-width: 900px)" in css

@@ -13,6 +13,7 @@ import functools
 import importlib.util
 import ast
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -1050,3 +1051,175 @@ def test_on_event_dispatches_group_message_to_push_reply():
 
     assert observed["process"] == [("r1", True, "")]
     assert _sent_texts(plugin) == ["已同意 QQ 200 的入群申请。"]
+
+
+# ----------------------------------------------------- 模拟申请推送文案预览
+
+
+def _preview_wired_plugin():
+    """组装 _simulate_push_preview 所需的最小插件桩。"""
+    plugin = plugin_instance()
+    plugin.config = SimpleNamespace(push_llm_provider="push-llm")
+    plugin.logger = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+    )
+    return plugin
+
+
+def _preview_config(style="natural"):
+    return SimpleNamespace(push_style=style, include_answer=True)
+
+
+def _preview_decision():
+    return SimpleNamespace(verdict="uncertain", confidence=0.3, reason="不像")
+
+
+def test_get_recent_group_contexts_filters_and_caps_at_limit():
+    """会话历史是 JSON 字符串；只留 role/content 均为字符串的消息，上限 10 条。"""
+    plugin = _preview_wired_plugin()
+    history = [
+        *[{"role": "user", "content": f"消息{i}"} for i in range(12)],
+        {"role": "user", "content": [{"type": "text", "text": "多模态"}]},
+        {"role": "user"},
+        "不是字典",
+    ]
+    conversation = SimpleNamespace(history=json.dumps(history))
+    plugin.context = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_curr_conversation_id=lambda umo: _async_value("cid-1"),
+            get_conversation=lambda umo, cid: _async_value(conversation),
+        )
+    )
+
+    contexts = asyncio.run(plugin._get_recent_group_contexts("qq:GroupMessage:100"))
+
+    assert [c["content"] for c in contexts] == [f"消息{i}" for i in range(2, 12)]
+
+
+def test_get_recent_group_contexts_silently_empty_without_conversation():
+    """无会话/无 conversation_manager 时静默返回空列表。"""
+    plugin = _preview_wired_plugin()
+    plugin.context = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_curr_conversation_id=lambda umo: _async_value(None),
+        )
+    )
+    assert asyncio.run(plugin._get_recent_group_contexts("qq:GroupMessage:100")) == []
+
+    plugin.context = SimpleNamespace()
+    assert asyncio.run(plugin._get_recent_group_contexts("qq:GroupMessage:100")) == []
+
+
+def test_simulate_push_preview_natural_uses_persona_and_contexts():
+    """natural 预览：人格 system prompt 与近期群消息 contexts 透传给 push LLM。"""
+    plugin = _preview_wired_plugin()
+    history = [{"role": "user", "content": "刚聊的话题"}]
+    conversation = SimpleNamespace(history=json.dumps(history), persona_id="p")
+    plugin.context = SimpleNamespace(
+        conversation_manager=SimpleNamespace(
+            get_curr_conversation_id=lambda umo: _async_value("cid-1"),
+            get_conversation=lambda umo, cid: _async_value(conversation),
+        )
+    )
+    persona_calls, llm_calls = [], []
+
+    async def persona(umo):
+        persona_calls.append(umo)
+        return "人格 prompt"
+
+    async def push_llm(prompt, system_prompt="", contexts=None):
+        llm_calls.append((prompt, system_prompt, contexts))
+        return "人格化预览文案"
+
+    plugin._get_push_persona_prompt = persona
+    plugin._call_push_llm = push_llm
+
+    preview = asyncio.run(
+        plugin._simulate_push_preview(
+            platform_id="qq-main",
+            group_id="100",
+            question="口令？",
+            answer="小河",
+            config=_preview_config(),
+            decision=_preview_decision(),
+            source_group_name="申请群",
+        )
+    )
+
+    assert preview["style"] == "natural"
+    assert preview["text"] == "人格化预览文案"
+    assert preview["persona_used"] is True
+    assert preview["provider"] == "push-llm"
+    assert preview["contexts_used"] == 1
+    assert persona_calls == ["qq-main:GroupMessage:100"]
+    prompt, system_prompt, contexts = llm_calls[0]
+    assert "口令？" in prompt and "小河" in prompt
+    assert system_prompt == "人格 prompt"
+    assert contexts == [{"role": "user", "content": "刚聊的话题"}]
+
+
+def test_simulate_push_preview_formatted_skips_llm():
+    """formatted 样式不调 LLM，文案含占位申请人、看法行与审批引导。"""
+    plugin = _preview_wired_plugin()
+    plugin.context = SimpleNamespace(conversation_manager=None)
+
+    async def persona(umo):
+        return ""
+
+    async def push_llm(prompt, system_prompt="", contexts=None):
+        raise AssertionError("formatted 不应调 LLM")
+
+    plugin._get_push_persona_prompt = persona
+    plugin._call_push_llm = push_llm
+
+    preview = asyncio.run(
+        plugin._simulate_push_preview(
+            platform_id="qq-main",
+            group_id="100",
+            question="口令？",
+            answer="小河",
+            config=_preview_config(style="formatted"),
+            decision=_preview_decision(),
+            source_group_name="申请群",
+        )
+    )
+
+    assert preview["style"] == "formatted"
+    assert "模拟用户" in preview["text"]
+    assert "口令？" in preview["text"]
+    assert "看法：自动审核无法确定" in preview["text"]
+    assert "回复『同意』" in preview["text"]
+    assert preview["persona_used"] is False
+    assert preview["contexts_used"] == 0
+
+
+def test_simulate_push_preview_natural_failure_marks_fallback():
+    """natural LLM 返回空：回退格式化模板并标注 natural_fallback_formatted。"""
+    plugin = _preview_wired_plugin()
+    plugin.context = SimpleNamespace(conversation_manager=None)
+
+    async def persona(umo):
+        return ""
+
+    async def push_llm(prompt, system_prompt="", contexts=None):
+        return ""
+
+    plugin._get_push_persona_prompt = persona
+    plugin._call_push_llm = push_llm
+
+    preview = asyncio.run(
+        plugin._simulate_push_preview(
+            platform_id="qq-main",
+            group_id="100",
+            question="口令？",
+            answer="小河",
+            config=_preview_config(),
+            decision=_preview_decision(),
+            source_group_name="申请群",
+        )
+    )
+
+    assert preview["style"] == "natural_fallback_formatted"
+    assert "入群申请待审核" in preview["text"]

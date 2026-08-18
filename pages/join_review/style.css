@@ -1145,3 +1145,22 @@ input[type="checkbox"] {
   color: var(--accent);
   font-weight: 600;
 }
+
+.simulate-preview {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.simulate-preview-text {
+  margin: 0;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  font-size: 14px;
+}

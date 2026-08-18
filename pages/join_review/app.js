@@ -340,6 +340,55 @@ const SIMULATE_WOULD_LABELS = {
   ignored: "实际发生时：忽略（该群两个开关均关闭）",
 };
 const SIMULATE_VERDICT_LABELS = { correct: "建议通过", incorrect: "建议拒绝", uncertain: "不确定", unavailable: "不可用" };
+const SIMULATE_PREVIEW_STYLE_BADGES = {
+  natural: ["自然文案（LLM 生成）", "good"],
+  formatted: ["格式化模板", ""],
+  natural_fallback_formatted: ["自然文案生成失败，已回退格式化模板", "bad"],
+};
+
+function renderSimulatePreview(data) {
+  const preview = data?.push_preview && typeof data.push_preview === "object" ? data.push_preview : null;
+  if (data?.would !== "pending_review") {
+    return `<div class="simulate-preview"><span class="simulate-detail">该申请不会触发推送，无文案预览。</span></div>`;
+  }
+  if (!preview) {
+    return `<div class="simulate-preview"><span class="simulate-detail">推送文案预览生成失败，请查看插件日志。</span></div>`;
+  }
+  const [styleLabel, badgeClass] = SIMULATE_PREVIEW_STYLE_BADGES[preview.style] || [String(preview.style || ""), ""];
+  const meta = [
+    preview.persona_used ? "人格：已带入" : "人格：未配置",
+    preview.provider ? `LLM：${preview.provider}` : "LLM：默认（主对话）",
+    `近期群消息：${Number(preview.contexts_used) || 0} 条`,
+  ];
+  return `<div class="simulate-preview">
+      <span class="status-badge ${badgeClass}">推送文案预览 · ${escapeHtml(styleLabel)}</span>
+      <pre class="simulate-preview-text">${escapeHtml(preview.text || "")}</pre>
+      <span class="simulate-detail">${escapeHtml(meta.join(" · "))}（仅预览，未发送）</span>
+    </div>`;
+}
+
+function renderSimulateResult(data) {
+  const result = $("#simulate-result");
+  const stages = Array.isArray(data?.stages) ? data.stages : [];
+  const final = data?.final && typeof data.final === "object" ? data.final : {};
+  const rows = stages.map((stage) => {
+    const stageName = SIMULATE_STAGE_LABELS[stage.stage] || String(stage.stage || "未知阶段");
+    const [outcomeLabel, badgeClass] = SIMULATE_OUTCOME_BADGES[stage.outcome] || [String(stage.outcome || ""), ""];
+    return `<div class="simulate-stage"><span class="status-badge ${badgeClass}">${stageName} · ${outcomeLabel}</span><span class="simulate-detail">${escapeHtml(stage.detail)}</span></div>`;
+  }).join("");
+  const verdict = SIMULATE_VERDICT_LABELS[final.verdict] || String(final.verdict || "未知");
+  const confidence = Number.isFinite(Number(final.confidence)) ? Number(final.confidence).toFixed(2) : "0.00";
+  const would = SIMULATE_WOULD_LABELS[data?.would] || "";
+  const presetsSource = { group: "按群预设", global: "全局回退预设", none: "无预设" }[data?.presets_source] || "";
+  result.innerHTML = `${rows}
+    <div class="simulate-final">
+      <strong>最终结论：${escapeHtml(verdict)}（置信度 ${confidence}）</strong>
+      <span class="simulate-detail">${escapeHtml(final.reason || "")}${presetsSource ? ` · 预设来源：${presetsSource}` : ""}</span>
+      <span class="simulate-would">${escapeHtml(would)}（仅说明，未执行任何操作）</span>
+    </div>
+    ${renderSimulatePreview(data)}`;
+  result.classList.remove("hidden");
+}
 
 function renderSimulateGroupOptions() {
   const select = $("#simulate-group");

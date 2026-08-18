@@ -45,6 +45,7 @@ class JoinReviewPageAPI:
         runtime: JoinReviewRuntime,
         logger: Any,
         ensure_llm: Any = None,
+        push_preview: Any = None,
     ) -> None:
         self.context = context
         self.config = config
@@ -53,6 +54,8 @@ class JoinReviewPageAPI:
         self.logger = logger
         # 模拟诊断前确保审核 LLM caller 已绑定（main 的延迟绑定钩子）。
         self.ensure_llm = ensure_llm
+        # 模拟申请的推送文案预览钩子（main 注入，带人格/近期群消息上下文）。
+        self.push_preview = push_preview
 
     def register(self) -> bool:
         register = getattr(self.context, "register_web_api", None)
@@ -342,7 +345,9 @@ class JoinReviewPageAPI:
         """模拟一次入群申请，走真实三段自动审核链路并返回逐步诊断。
 
         零副作用：不触平台批准/拒绝 API、不写待审记录、不发通知/推送、
-        不写审计日志。``would`` 仅按该群当前开关说明实际事件会发生什么。
+        不写审计日志。``would`` 仅按该群当前开关说明实际事件会发生什么；
+        ``would == "pending_review"`` 时附 ``push_preview`` 推送文案预览
+        （只生成不发送），预览生成失败时为 None。
         """
         payload = await self._payload()
         if payload is None:
@@ -361,7 +366,8 @@ class JoinReviewPageAPI:
         if len(question) > 2048 or len(answer) > 2048:
             return self._error("simulate_text_too_long")
         try:
-            await self._validate_config_scope(payload, await self._discovered())
+            discovered = await self._discovered()
+            await self._validate_config_scope(payload, discovered)
             config = await self.store.get_group_config(
                 payload["platform_id"], payload["group_id"]
             )
@@ -405,6 +411,29 @@ class JoinReviewPageAPI:
             if config.join_questions
             else ("global" if getattr(self.config, "join_questions", []) else "none")
         )
+        preview = None
+        if would == "pending_review" and callable(self.push_preview):
+            # 仅转人工待审会触发推送，此时给出推送文案预览（零副作用）。
+            source = self._discovery_map(discovered).get(
+                (str(payload["platform_id"]).strip(), str(payload["group_id"]).strip())
+            )
+            try:
+                preview = await self.push_preview(
+                    platform_id=str(payload["platform_id"]).strip(),
+                    group_id=str(payload["group_id"]).strip(),
+                    question=question,
+                    answer=answer,
+                    config=config,
+                    decision=decision,
+                    source_group_name=(
+                        source.group_name if source is not None else "未知群名"
+                    ),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "[idg] join-review push preview failed: %s", type(exc).__name__
+                )
+                preview = None
         return self._response(
             {
                 "data": {
@@ -412,6 +441,7 @@ class JoinReviewPageAPI:
                     "final": report["final"],
                     "would": would,
                     "presets_source": presets_source,
+                    "push_preview": preview,
                 }
             }
         )

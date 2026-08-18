@@ -39,6 +39,7 @@ from .core.join_review import GuardBlockedError, JoinReviewRuntime
 from .core.join_review_api import JoinReviewPageAPI
 from .core.join_review_store import (
     ACTIONABLE_STATUSES,
+    JoinRequest,
     JoinReviewStore,
     RequestNotActionable,
     ValidationError,
@@ -64,7 +65,7 @@ from .core.quest_binding_control import (
     result as quest_binding_control_result,
 )
 from .core.relationship import RelationshipService
-from .core.request_push import RequestPushService
+from .core.request_push import RequestPushService, render_push_preview
 from .core.request_context import (
     OWNER_IDENTITY_GUARDIAN,
     PHASE_LLM_REQUEST,
@@ -208,6 +209,7 @@ class IdentityGuardianPlugin(Star):
             runtime=self.join_review,
             logger=self.logger,
             ensure_llm=self._ensure_llm_caller,
+            push_preview=self._simulate_push_preview,
         )
         self.join_review_page_available = self.join_review_page_api.register()
 
@@ -615,7 +617,11 @@ class IdentityGuardianPlugin(Star):
     # ------------------------------------------------------------------
 
     async def _request_llm(
-        self, prompt: str, system_prompt: str, provider_id: str
+        self,
+        prompt: str,
+        system_prompt: str,
+        provider_id: str,
+        contexts: list[dict] | None = None,
     ) -> str:
         """统一的 LLM 调用器：指定 provider，留空回退主对话 LLM。"""
         try:
@@ -643,6 +649,10 @@ class IdentityGuardianPlugin(Star):
             from astrbot.api.provider import ProviderRequest
 
             req = ProviderRequest(prompt=prompt, system_prompt=system_prompt)
+            if contexts:
+                # OpenAI 格式的上下文消息列表（astrbot/core/provider/entities.py
+                # ProviderRequest.contexts），供预览生成参考近期群消息语气。
+                req.contexts = contexts
             resp = await provider.text_chat(**req.__dict__)
             if hasattr(resp, "completion_text"):
                 return str(resp.completion_text)
@@ -657,10 +667,15 @@ class IdentityGuardianPlugin(Star):
         """调用审核用 LLM，留空则回退主对话 LLM。"""
         return await self._request_llm(prompt, "", self.config.audit_llm_provider)
 
-    async def _call_push_llm(self, prompt: str, system_prompt: str = "") -> str:
+    async def _call_push_llm(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        contexts: list[dict] | None = None,
+    ) -> str:
         """调用推送文案生成 LLM（push_llm_provider），失败返回空串。"""
         return await self._request_llm(
-            prompt, system_prompt, self.config.push_llm_provider
+            prompt, system_prompt, self.config.push_llm_provider, contexts=contexts
         )
 
     async def _get_push_persona_prompt(self, umo: str) -> str:
@@ -700,6 +715,84 @@ class IdentityGuardianPlugin(Star):
         except Exception as exc:
             self.logger.debug("%s persona lookup failed: %s", LOG_PREFIX, exc)
             return ""
+
+    async def _get_recent_group_contexts(self, umo: str, limit: int = 10) -> list[dict]:
+        """取目标会话最近几条消息作 LLM contexts；任何一步失败都返回空列表。
+
+        历史来自 conversation_manager 当前会话（Conversation.history 为
+        JSON 字符串，内容是 OpenAI 风格 ``{"role", "content"}`` 字典列表，
+        见 astrbot/core/conversation_mgr.py）。只保留 role/content 均为
+        字符串的文本消息，上限 ``limit`` 条。
+        """
+        try:
+            umo = str(umo or "")
+            conversation_manager = getattr(self.context, "conversation_manager", None)
+            if not umo or conversation_manager is None:
+                return []
+            conversation_id = await conversation_manager.get_curr_conversation_id(umo)
+            if not conversation_id:
+                return []
+            conversation = await conversation_manager.get_conversation(
+                umo, conversation_id
+            )
+            history = json.loads(str(getattr(conversation, "history", "") or "[]"))
+            if not isinstance(history, list):
+                return []
+            contexts = [
+                {"role": item["role"], "content": item["content"]}
+                for item in history
+                if isinstance(item, dict)
+                and isinstance(item.get("role"), str)
+                and isinstance(item.get("content"), str)
+            ]
+            return contexts[-limit:]
+        except Exception as exc:
+            self.logger.debug("%s history lookup failed: %s", LOG_PREFIX, exc)
+            return []
+
+    async def _simulate_push_preview(
+        self,
+        *,
+        platform_id: str,
+        group_id: str,
+        question: str,
+        answer: str,
+        config: Any,
+        decision: Any,
+        source_group_name: str,
+    ) -> dict[str, Any]:
+        """Page「模拟申请」的推送文案预览（零副作用，只生成不发送）。
+
+        与生产推送共用 ``render_push_preview`` 渲染路径：申请字段换成不落库
+        的临时 JoinRequest，nickname/user_id 用占位值；natural 样式的 LLM
+        调用带入目标群会话人格与近期群消息 contexts。
+        """
+        request = JoinRequest(
+            request_id="simulate-preview",
+            platform_id=str(platform_id),
+            group_id=str(group_id),
+            user_id="（模拟）",
+            nickname="模拟用户",
+            level="",
+            question=str(question or ""),
+            answer=str(answer or ""),
+            sub_type="add",
+            flag="simulate-preview",
+        )
+        umo = f"{platform_id}:GroupMessage:{group_id}"
+        persona_prompt = await self._get_push_persona_prompt(umo)
+        contexts = await self._get_recent_group_contexts(umo)
+
+        async def push_llm_caller(prompt: str) -> str:
+            return await self._call_push_llm(prompt, persona_prompt, contexts=contexts)
+
+        preview = await render_push_preview(
+            request, config, source_group_name, push_llm_caller, decision
+        )
+        preview["persona_used"] = bool(persona_prompt)
+        preview["provider"] = str(getattr(self.config, "push_llm_provider", "") or "")
+        preview["contexts_used"] = len(contexts)
+        return preview
 
     def _ensure_llm_caller(self) -> None:
         """延迟绑定 LLM caller。"""

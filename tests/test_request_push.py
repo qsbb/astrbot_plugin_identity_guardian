@@ -9,7 +9,12 @@ import pytest
 
 from core.join_review_store import JoinReviewStore
 from core.onebot import OneBotClient
-from core.request_push import PUSH_REPLY_HINT, RequestPushService, build_opinion_line
+from core.request_push import (
+    PUSH_REPLY_HINT,
+    RequestPushService,
+    build_opinion_line,
+    render_push_preview,
+)
 
 
 def run(awaitable):
@@ -323,3 +328,78 @@ def test_push_natural_style_uses_llm(tmp_path):
 
     assert sent == ["300"] and failed == []
     assert bot.sent[0][1] == "人格化审核请求文案"
+
+
+# ------------------------------------------------------------------
+# render_push_preview：与 render_message 同一路径，额外标注 style
+# ------------------------------------------------------------------
+
+
+def test_preview_formatted_marks_style(tmp_path):
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store)
+
+    preview = run(render_push_preview(request, config, "申请群", None, make_decision()))
+
+    assert preview["style"] == "formatted"
+    assert "入群申请待审核" in preview["text"]
+    assert "看法：自动审核建议通过" in preview["text"]
+    assert PUSH_REPLY_HINT in preview["text"]
+
+
+def test_preview_natural_success_marks_style(tmp_path):
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_style="natural")
+
+    async def llm_caller(prompt: str) -> str:
+        return "自然文案"
+
+    preview = run(render_push_preview(request, config, "申请群", llm_caller))
+
+    assert preview == {"style": "natural", "text": "自然文案"}
+
+
+@pytest.mark.parametrize("llm_result", ["", "   ", None])
+def test_preview_natural_empty_falls_back_and_marks_style(tmp_path, llm_result):
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_style="natural")
+
+    async def llm_caller(prompt: str):
+        return llm_result
+
+    preview = run(render_push_preview(request, config, "申请群", llm_caller))
+
+    assert preview["style"] == "natural_fallback_formatted"
+    assert "入群申请待审核" in preview["text"]
+    assert PUSH_REPLY_HINT in preview["text"]
+
+
+def test_preview_natural_exception_falls_back_and_marks_style(tmp_path):
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_style="natural")
+
+    async def llm_caller(prompt: str):
+        raise RuntimeError("llm down")
+
+    preview = run(render_push_preview(request, config, "申请群", llm_caller))
+
+    assert preview["style"] == "natural_fallback_formatted"
+    assert "答案：溪流" in preview["text"]
+
+
+def test_preview_shares_render_path_with_render_message(tmp_path):
+    """预览与生产推送共用同一渲染实现，两者文案逐字一致。"""
+    service, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store)
+
+    preview = run(render_push_preview(request, config, "申请群", None, make_decision()))
+    message = run(
+        service.render_message(request, config, "申请群", None, make_decision())
+    )
+
+    assert preview["text"] == message

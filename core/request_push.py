@@ -51,6 +51,53 @@ def build_opinion_line(decision: Any) -> str:
     return f"{line}：{reason}" if reason else f"{line}。"
 
 
+def _formatted_message(
+    request: JoinRequest,
+    config: GroupReviewConfig,
+    source_group_name: str,
+    decision: Any = None,
+) -> str:
+    body = JoinNotificationService.build_message(
+        request,
+        include_answer=config.include_answer,
+        source_group_name=source_group_name,
+        show_source=True,
+    )
+    return f"{body}\n{build_opinion_line(decision)}\n{PUSH_REPLY_HINT}"
+
+
+async def render_push_preview(
+    request: JoinRequest,
+    config: GroupReviewConfig,
+    source_group_name: str,
+    llm_caller: Any,
+    decision: Any = None,
+) -> dict[str, str]:
+    """零副作用渲染推送文案，返回 ``{"style", "text"}`` 供诊断预览。
+
+    与生产推送同一条渲染路径（``RequestPushService.render_message`` 委托本
+    函数），额外标注实际走的样式：natural 空结果或异常回退格式化模板时
+    ``style`` 为 ``natural_fallback_formatted``。
+    """
+    style = "formatted"
+    if config.push_style == "natural" and llm_caller is not None:
+        text = ""
+        try:
+            result = await llm_caller(
+                build_push_message_prompt(request, source_group_name)
+            )
+            text = "" if result is None else str(result).strip()
+        except Exception:
+            text = ""
+        if text:
+            return {"style": "natural", "text": text}
+        style = "natural_fallback_formatted"
+    return {
+        "style": style,
+        "text": _formatted_message(request, config, source_group_name, decision),
+    }
+
+
 class RequestPushService:
     def __init__(self, store: JoinReviewStore, onebot: OneBotClient) -> None:
         self.store = store
@@ -65,33 +112,10 @@ class RequestPushService:
         decision: Any = None,
     ) -> str:
         """渲染推送文案；natural 走 LLM，空结果或异常回退格式化模板。"""
-        if config.push_style == "natural" and llm_caller is not None:
-            text = ""
-            try:
-                result = await llm_caller(
-                    build_push_message_prompt(request, source_group_name)
-                )
-                text = "" if result is None else str(result).strip()
-            except Exception:
-                text = ""
-            if text:
-                return text
-        return self._formatted_message(request, config, source_group_name, decision)
-
-    @staticmethod
-    def _formatted_message(
-        request: JoinRequest,
-        config: GroupReviewConfig,
-        source_group_name: str,
-        decision: Any = None,
-    ) -> str:
-        body = JoinNotificationService.build_message(
-            request,
-            include_answer=config.include_answer,
-            source_group_name=source_group_name,
-            show_source=True,
+        preview = await render_push_preview(
+            request, config, source_group_name, llm_caller, decision
         )
-        return f"{body}\n{build_opinion_line(decision)}\n{PUSH_REPLY_HINT}"
+        return preview["text"]
 
     async def push_for_request(
         self,
@@ -167,4 +191,9 @@ class RequestPushService:
         return name or "未知群名"
 
 
-__all__ = ["PUSH_REPLY_HINT", "RequestPushService", "build_opinion_line"]
+__all__ = [
+    "PUSH_REPLY_HINT",
+    "RequestPushService",
+    "build_opinion_line",
+    "render_push_preview",
+]
