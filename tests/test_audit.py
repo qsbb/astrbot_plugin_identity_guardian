@@ -407,3 +407,117 @@ def test_auto_audit_per_group_presets_take_priority_over_global():
         svc.execute_auto_audit(object(), _auto_raw(), configured_questions=None)
     )
     assert result2.platform_approved is True
+
+
+# ----------------------------------------------------- simulate_auto_audit 诊断
+
+
+def test_simulate_preset_hit_skips_knowledge_and_llm():
+    """模拟：预设第一段命中后，知识检索与后续 LLM 均不再调用。"""
+    knowledge = StubKnowledge(evidence=["不应被用到"])
+
+    async def llm(prompt):
+        raise AssertionError("预设命中后不应再调 LLM")
+
+    svc = _make_service(
+        _make_config(join_questions=[], enable_active_learner_recall=True),
+        llm_caller=llm,
+    )
+    svc.knowledge = knowledge
+
+    report = asyncio.run(
+        svc.simulate_auto_audit(
+            question="口令？",
+            answer="溪流",
+            group_id="100",
+            configured_questions=[{"question": "口令？", "answers": ["溪流"]}],
+        )
+    )
+
+    assert report["final"]["verdict"] == JoinVerdict.CORRECT.value
+    assert report["stages"] == [
+        {
+            "stage": "preset",
+            "outcome": "passed",
+            "detail": report["stages"][0]["detail"],
+        }
+    ]
+    assert knowledge.calls == 0
+
+
+def test_simulate_knowledge_hit_records_evidence_detail():
+    """模拟：预设不中，知联动第二段命中并记录证据细节。"""
+    svc = _make_service(
+        _make_config(join_questions=[], enable_active_learner_recall=True)
+    )
+    svc.knowledge = StubKnowledge(evidence=["群里大佬说过答案是溪流"])
+
+    async def llm(prompt):
+        if "大佬说过" in prompt:
+            return '{"verdict": "correct", "confidence": 0.95, "reason": "证据支持"}'
+        return '{"verdict": "uncertain", "confidence": 0.3, "reason": "不像"}'
+
+    svc._llm_caller = llm
+
+    report = asyncio.run(
+        svc.simulate_auto_audit(
+            question="口令？",
+            answer="小河",
+            group_id="100",
+            configured_questions=[{"question": "口令？", "answers": ["鹅卵石"]}],
+        )
+    )
+
+    assert report["final"]["verdict"] == JoinVerdict.CORRECT.value
+    outcomes = {s["stage"]: s["outcome"] for s in report["stages"]}
+    assert outcomes == {"preset": "failed", "knowledge": "passed"}
+    knowledge_detail = [s for s in report["stages"] if s["stage"] == "knowledge"][0]
+    assert "证据" in knowledge_detail["detail"]
+
+
+def test_simulate_double_miss_falls_back_with_trace():
+    """模拟：双无走兜底 UNCERTAIN，三段 trace 完整。"""
+    svc = _make_service(_make_config(join_questions=[]))
+    svc.knowledge = StubKnowledge(evidence=[])
+
+    report = asyncio.run(
+        svc.simulate_auto_audit(
+            question="口令？",
+            answer="随便",
+            group_id="100",
+            configured_questions=None,
+        )
+    )
+
+    assert report["final"]["verdict"] == JoinVerdict.UNCERTAIN.value
+    assert report["final"]["reason"] == "无预设答案且无知识证据"
+    assert [s["stage"] for s in report["stages"]] == ["preset", "knowledge", "fallback"]
+    assert report["stages"][0]["outcome"] == "skipped"
+    assert report["stages"][2]["outcome"] == "failed"
+
+
+def test_simulate_without_llm_skips_llm_stages():
+    """模拟：无 LLM 时预设语义与知识判定都跳过，最终兜底。"""
+    svc = _make_service(
+        _make_config(
+            join_questions=[{"question": "口令？", "answers": ["溪流"]}],
+            enable_active_learner_recall=True,
+        ),
+        llm_caller=None,
+    )
+    svc.knowledge = StubKnowledge(evidence=["有证据也没法判"])
+
+    report = asyncio.run(
+        svc.simulate_auto_audit(
+            question="口令？",
+            answer="小河",
+            group_id="100",
+            configured_questions=None,
+        )
+    )
+
+    assert report["final"]["verdict"] == JoinVerdict.UNCERTAIN.value
+    outcomes = {s["stage"]: s["outcome"] for s in report["stages"]}
+    assert outcomes["preset"] == "skipped"
+    assert outcomes["knowledge"] == "skipped"
+    assert outcomes["fallback"] == "failed"

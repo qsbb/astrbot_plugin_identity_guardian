@@ -253,11 +253,20 @@ class JoinAuditService:
             and decision.confidence >= self.config.join_approve_threshold
         )
 
+    @staticmethod
+    def _note(
+        trace: list[dict[str, str]] | None, stage: str, outcome: str, detail: str
+    ) -> None:
+        """Append one stage-trace entry when diagnostics are requested."""
+        if trace is not None:
+            trace.append({"stage": stage, "outcome": outcome, "detail": detail})
+
     async def _judge_against_presets(
         self,
         question: str,
         answer: str,
         presets: list[Any],
+        trace: list[dict[str, str]] | None = None,
     ) -> JoinDecision | None:
         """LLM 语义比对「申请人答案 vs 适用预设答案」。
 
@@ -266,6 +275,7 @@ class JoinAuditService:
         答案或调用失败时返回 None，让调用方进入下一段判定。
         """
         if self._llm_caller is None:
+            self._note(trace, "preset", "skipped", "无 LLM 可用，跳过预设语义比对")
             return None
         reference_answers: list[str] = []
         for q in presets:
@@ -283,6 +293,7 @@ class JoinAuditService:
                 str(a).strip() for a in q.get("answers", []) if str(a).strip()
             )
         if not reference_answers:
+            self._note(trace, "preset", "skipped", "没有适用于该问题的预设答案")
             return None
         prompt = build_answer_judge_prompt(
             question=question,
@@ -291,16 +302,38 @@ class JoinAuditService:
             evidence="",
         )
         try:
-            return self._parse_llm_judgment(await self._llm_caller(prompt))
+            raw_output = await self._llm_caller(prompt)
         except Exception as exc:
             logger.warning("[idg] join audit preset LLM failed: %s", type(exc).__name__)
+            self._note(trace, "preset", "failed", "预设语义判断 LLM 调用异常")
             return None
+        decision = self._parse_llm_judgment(raw_output)
+        detail = (
+            f"LLM 语义比对 {len(reference_answers)} 条预设答案：{decision.verdict}"
+            f"（置信度 {decision.confidence:.2f}）：{decision.reason}"
+            f"；原始返回：{str(raw_output)[:200]}"
+        )
+        self._note(
+            trace,
+            "preset",
+            "passed" if self.is_approvable(decision) else "failed",
+            detail,
+        )
+        return decision
 
     async def _judge_with_knowledge(
-        self, question: str, answer: str, group_id: str
+        self,
+        question: str,
+        answer: str,
+        group_id: str,
+        trace: list[dict[str, str]] | None = None,
     ) -> JoinDecision | None:
         """知联动判定：有证据才调 LLM；无证据/联动关闭/查询失败返回 None。"""
-        if not self.config.enable_active_learner_recall or self._llm_caller is None:
+        if not self.config.enable_active_learner_recall:
+            self._note(trace, "knowledge", "skipped", "知联动未开启")
+            return None
+        if self._llm_caller is None:
+            self._note(trace, "knowledge", "skipped", "无 LLM 可用，跳过知识判定")
             return None
         try:
             evidence = await self.knowledge.recall_safe(
@@ -310,8 +343,10 @@ class JoinAuditService:
             logger.warning(
                 "[idg] join audit knowledge recall failed: %s", type(exc).__name__
             )
+            self._note(trace, "knowledge", "failed", "知识检索失败")
             return None
         if not evidence:
+            self._note(trace, "knowledge", "skipped", "知识检索无证据")
             return None
         evidence_text = "; ".join(
             str(getattr(e, "content", e)) if not isinstance(e, str) else e
@@ -324,12 +359,132 @@ class JoinAuditService:
             evidence=evidence_text,
         )
         try:
-            return self._parse_llm_judgment(await self._llm_caller(prompt))
+            raw_output = await self._llm_caller(prompt)
         except Exception as exc:
             logger.warning(
                 "[idg] join audit knowledge LLM failed: %s", type(exc).__name__
             )
+            self._note(trace, "knowledge", "failed", "知识判定 LLM 调用异常")
             return None
+        decision = self._parse_llm_judgment(raw_output)
+        excerpt = evidence_text[:80]
+        detail = (
+            f"检索到 {len(evidence)} 条证据（如：{excerpt}）；LLM 带证据判断："
+            f"{decision.verdict}（置信度 {decision.confidence:.2f}）：{decision.reason}"
+            f"；原始返回：{str(raw_output)[:200]}"
+        )
+        self._note(
+            trace,
+            "knowledge",
+            "passed" if self.is_approvable(decision) else "failed",
+            detail,
+        )
+        return decision
+
+    async def _run_pipeline(
+        self,
+        question: str,
+        answer: str,
+        group_id: str,
+        presets: list[Any],
+        trace: list[dict[str, str]] | None = None,
+    ) -> JoinDecision:
+        """三段判定主链路（预设 → 知联动 → 兜底），不含任何平台副作用。
+
+        ``presets`` 由调用方完成「按群预设 → 全局回退」解析；``trace``
+        非空时逐段记录诊断细节（模拟申请用）。
+        """
+        # 1. 预设判定
+        decision: JoinDecision | None = None
+        if not presets:
+            self._note(trace, "preset", "skipped", "该群与全局均无入群问答预设")
+        else:
+            matched = self._match_configured(question, answer, presets)
+            if matched.verdict == JoinVerdict.CORRECT.value:
+                if self.is_approvable(matched):
+                    self._note(
+                        trace,
+                        "preset",
+                        "passed",
+                        f"{matched.reason}（置信度 {matched.confidence:.2f}）",
+                    )
+                else:
+                    self._note(
+                        trace,
+                        "preset",
+                        "failed",
+                        f"{matched.reason}，但置信度 {matched.confidence:.2f} "
+                        f"低于阈值 {self.config.join_approve_threshold:.2f}",
+                    )
+                decision = matched
+            else:
+                decision = await self._judge_against_presets(
+                    question, answer, presets, trace=trace
+                )
+
+        # 2. 知联动判定
+        if decision is None or not self.is_approvable(decision):
+            knowledge_decision = await self._judge_with_knowledge(
+                question, answer, group_id, trace=trace
+            )
+            if knowledge_decision is not None and self.is_approvable(
+                knowledge_decision
+            ):
+                decision = knowledge_decision
+
+        # 3. 兜底：无高置信结果，转忽略/人工
+        if decision is None or not self.is_approvable(decision):
+            decision = JoinDecision(
+                verdict=JoinVerdict.UNCERTAIN.value,
+                confidence=0.2,
+                reason="未匹配预设答案且无知识证据"
+                if presets
+                else "无预设答案且无知识证据",
+            )
+            self._note(trace, "fallback", "failed", decision.reason)
+        return decision
+
+    async def simulate_auto_audit(
+        self,
+        *,
+        question: str,
+        answer: str,
+        group_id: str,
+        configured_questions: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        """零副作用的模拟审核诊断。
+
+        复用 ``_run_pipeline`` 三段判定（真实调用 LLM 与知识检索），
+        但不触平台批准 API、不写待审记录、不发通知/推送、不写审计日志。
+        返回 ``{"stages": [...], "final": {...}}``。
+        """
+        question = _bounded_join_text(question, MAX_JOIN_TEXT_LENGTH)
+        answer = _bounded_join_text(answer, MAX_JOIN_TEXT_LENGTH)
+        presets = (
+            list(configured_questions)
+            if configured_questions is not None
+            else self.config.join_questions
+        )
+        trace: list[dict[str, str]] = []
+        if not answer:
+            decision = JoinDecision(
+                verdict=JoinVerdict.UNCERTAIN.value,
+                confidence=0.0,
+                reason="答案为空",
+            )
+            self._note(trace, "fallback", "failed", "答案为空")
+        else:
+            decision = await self._run_pipeline(
+                question, answer, group_id, presets, trace
+            )
+        return {
+            "stages": trace,
+            "final": {
+                "verdict": decision.verdict,
+                "confidence": decision.confidence,
+                "reason": decision.reason,
+            },
+        }
 
     async def execute_auto_audit(
         self,
@@ -365,34 +520,8 @@ class JoinAuditService:
             else self.config.join_questions
         )
 
-        # 1. 预设判定
-        decision: JoinDecision | None = None
-        if presets:
-            matched = self._match_configured(question, answer, presets)
-            if matched.verdict == JoinVerdict.CORRECT.value:
-                decision = matched
-            else:
-                decision = await self._judge_against_presets(question, answer, presets)
-
-        # 2. 知联动判定
-        if decision is None or not self.is_approvable(decision):
-            knowledge_decision = await self._judge_with_knowledge(
-                question, answer, group_id
-            )
-            if knowledge_decision is not None and self.is_approvable(
-                knowledge_decision
-            ):
-                decision = knowledge_decision
-
-        # 3. 兜底：无高置信结果，转忽略/人工
-        if decision is None or not self.is_approvable(decision):
-            decision = JoinDecision(
-                verdict=JoinVerdict.UNCERTAIN.value,
-                confidence=0.2,
-                reason="未匹配预设答案且无知识证据"
-                if presets
-                else "无预设答案且无知识证据",
-            )
+        decision = await self._run_pipeline(question, answer, group_id, presets)
+        if not self.is_approvable(decision):
             return AutoAuditResult(decision=decision)
 
         ok, err = await self.onebot.set_group_add_request(

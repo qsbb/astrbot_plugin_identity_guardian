@@ -112,6 +112,11 @@ def parse_join_request(event: Any, raw: dict[str, Any]) -> ParsedJoinRequest:
     )
 
 
+def resolve_presets(config: Any) -> list[Any] | None:
+    """按群问答预设优先；该群未配置时返回 None，由 audit 回退全局配置。"""
+    return list(config.join_questions) or None
+
+
 class JoinReviewRuntime:
     def __init__(
         self,
@@ -178,10 +183,9 @@ class JoinReviewRuntime:
         audit_result: AutoAuditResult | None = None
         if config.auto_audit_enabled:
             # 按群问答预设优先；该群未配置时传 None，由 audit 回退全局 join_questions。
-            presets = list(config.join_questions) or None
             try:
                 audit_result = await self.audit.execute_auto_audit(
-                    event, raw, configured_questions=presets
+                    event, raw, configured_questions=resolve_presets(config)
                 )
             except Exception:
                 audit_result = AutoAuditResult(
@@ -257,4 +261,5 @@ __all__ = [
     "JoinReviewRuntime",
     "ParsedJoinRequest",
     "parse_join_request",
+    "resolve_presets",
 ]

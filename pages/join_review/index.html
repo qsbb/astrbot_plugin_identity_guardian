@@ -92,6 +92,25 @@
         <p class="empty-state">正在加载…</p>
       </div>
     </article>
+
+    <article class="card" aria-labelledby="simulate-title">
+      <div class="section-heading">
+        <div>
+          <h2 id="simulate-title">模拟申请</h2>
+          <p>零副作用诊断：走真实自动审核链路（预设 → 知联动 → 兜底），不触平台、不写记录、不发通知。</p>
+        </div>
+      </div>
+      <div class="simulate-form">
+        <label class="popover-field"><span>群</span><select id="simulate-group" class="inline-select"><option value="">正在加载群列表…</option></select></label>
+        <label class="popover-field"><span>问题</span><input id="simulate-question" class="group-whitelist" type="text" maxlength="2048" placeholder="入群问题（留空 = 仅按答案判断）"></label>
+        <label class="popover-field"><span>答案</span><textarea id="simulate-answer" class="group-whitelist jq-answers" rows="3" maxlength="2048" placeholder="申请人填写的答案（必填）"></textarea></label>
+        <div class="popover-actions">
+          <button id="simulate-run" class="button compact" type="button">开始测试</button>
+        </div>
+      </div>
+      <div id="simulate-error" class="notice error hidden" role="alert"></div>
+      <div id="simulate-result" class="simulate-result hidden" aria-live="polite"></div>
+    </article>
   </main>
 
   <div id="group-popover" class="group-popover hidden" role="dialog" aria-label="群审核设置"></div>

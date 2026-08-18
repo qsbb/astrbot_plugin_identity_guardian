@@ -98,6 +98,7 @@ def test_routes_use_join_review_prefix_and_dashboard_registration(tmp_path):
         f"{ROUTE_PREFIX}/requests",
         f"{ROUTE_PREFIX}/approve",
         f"{ROUTE_PREFIX}/reject",
+        f"{ROUTE_PREFIX}/simulate",
     }
     assert all(len(route) == 4 for route in routes)
 
@@ -332,3 +333,191 @@ def test_guard_blocked_returns_503_and_keeps_request_pending(tmp_path, monkeypat
     assert body["error"] == "guard_blocked"
     assert run(store.get_request(request.request_id)).status == "pending"
     assert not any(action == "set_group_add_request" for action, _ in bot.calls)
+
+
+# ----------------------------------------------------- 模拟申请诊断（simulate）
+
+
+def _wire_simulate_audit(api, *, llm_caller=None, **config_overrides):
+    """给 API 换上一个带真实 audit 服务的 runtime 桩。"""
+    from core.audit import JoinAuditService
+    from core.config import Config
+    from core.knowledge import KnowledgeService
+
+    raw = {
+        "join_questions": [],
+        "join_approve_threshold": 0.9,
+        "enable_active_learner_recall": False,
+    }
+    raw.update(config_overrides)
+    config = Config(raw)
+    audit = JoinAuditService(
+        config, OneBotClient(), KnowledgeService(config), llm_caller
+    )
+    api.runtime = SimpleNamespace(onebot=OneBotClient(), audit=audit)
+    return audit
+
+
+def _simulate_payload(**overrides):
+    payload = {
+        "platform_id": "qq-main",
+        "group_id": "100",
+        "question": "口令？",
+        "answer": "溪流",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_simulate_requires_fields_and_non_empty_answer(tmp_path, monkeypatch):
+    api, _, _, _ = make_api(tmp_path)
+    _wire_simulate_audit(api)
+
+    monkeypatch.setattr(api_module, "request", FakeRequest({"platform_id": "qq-main"}))
+    result = response_data(run(api.simulate()))
+    assert result["success"] is False and result["error"] == "invalid_request"
+
+    monkeypatch.setattr(
+        api_module, "request", FakeRequest(_simulate_payload(answer="  "))
+    )
+    result = response_data(run(api.simulate()))
+    assert result["success"] is False and result["error"] == "invalid_answer"
+
+    monkeypatch.setattr(
+        api_module, "request", FakeRequest(_simulate_payload(answer="x" * 2049))
+    )
+    result = response_data(run(api.simulate()))
+    assert result["success"] is False and result["error"] == "simulate_text_too_long"
+
+
+def test_simulate_rejects_group_not_joined(tmp_path, monkeypatch):
+    api, _, _, _ = make_api(tmp_path)
+    _wire_simulate_audit(api)
+
+    monkeypatch.setattr(
+        api_module, "request", FakeRequest(_simulate_payload(group_id="999"))
+    )
+    result = response_data(run(api.simulate()))
+    assert result["success"] is False and result["error"] == "group_not_joined"
+
+
+def test_simulate_preset_hit_zero_side_effects(tmp_path, monkeypatch):
+    """预设第一段命中：不调 LLM/知识检索，且全程零副作用。"""
+    api, store, _, bot = make_api(tmp_path)
+    _wire_simulate_audit(api)
+    run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            auto_audit_enabled=True,
+            review_send_enabled=True,
+            join_questions=[{"question": "口令？", "answers": ["溪流"]}],
+        )
+    )
+
+    async def llm(prompt):
+        raise AssertionError("预设命中后不应再调 LLM")
+
+    api.runtime.audit._llm_caller = llm
+    monkeypatch.setattr(api_module, "request", FakeRequest(_simulate_payload()))
+    result = response_data(run(api.simulate()))
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["final"]["verdict"] == "correct"
+    assert data["would"] == "approve"
+    assert data["presets_source"] == "group"
+    assert data["stages"][0]["stage"] == "preset"
+    assert data["stages"][0]["outcome"] == "passed"
+    # 零副作用：无待审记录、无平台写操作
+    assert run(store.list_requests()) == []
+    assert not any(
+        action in ("set_group_add_request", "send_group_msg") for action, _ in bot.calls
+    )
+
+
+def test_simulate_knowledge_hit_on_second_stage(tmp_path, monkeypatch):
+    """无预设 → 知联动第二段命中。"""
+    api, store, _, _ = make_api(tmp_path)
+    audit = _wire_simulate_audit(api, enable_active_learner_recall=True)
+    run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            auto_audit_enabled=True,
+            review_send_enabled=False,
+        )
+    )
+
+    class StubKnowledge:
+        async def recall_safe(self, query, scope=None):
+            return ["群里大佬说过答案是溪流"]
+
+    audit.knowledge = StubKnowledge()
+
+    async def llm(prompt):
+        assert "大佬说过" in prompt
+        return '{"verdict": "correct", "confidence": 0.95, "reason": "证据支持"}'
+
+    audit._llm_caller = llm
+    monkeypatch.setattr(api_module, "request", FakeRequest(_simulate_payload()))
+    result = response_data(run(api.simulate()))
+
+    data = result["data"]
+    assert data["final"]["verdict"] == "correct"
+    # 该群只开自动审核、没开发送审核：不批准时保持平台待审，此处批准
+    assert data["would"] == "approve"
+    assert data["presets_source"] == "none"
+    outcomes = {stage["stage"]: stage["outcome"] for stage in data["stages"]}
+    assert outcomes == {"preset": "skipped", "knowledge": "passed"}
+
+
+def test_simulate_double_miss_falls_back_uncertain(tmp_path, monkeypatch):
+    """预设不中 + 联动关闭：兜底 UNCERTAIN，按群开关说明会转人工。"""
+    api, store, _, _ = make_api(tmp_path)
+    _wire_simulate_audit(api)
+    run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            auto_audit_enabled=True,
+            review_send_enabled=True,
+            join_questions=[{"question": "口令？", "answers": ["鹅卵石"]}],
+        )
+    )
+
+    async def llm(prompt):
+        return '{"verdict": "uncertain", "confidence": 0.3, "reason": "不像"}'
+
+    api.runtime.audit._llm_caller = llm
+    monkeypatch.setattr(
+        api_module, "request", FakeRequest(_simulate_payload(answer="小河"))
+    )
+    result = response_data(run(api.simulate()))
+
+    data = result["data"]
+    assert data["final"]["verdict"] == "uncertain"
+    assert data["would"] == "pending_review"
+    outcomes = {stage["stage"]: stage["outcome"] for stage in data["stages"]}
+    assert outcomes["fallback"] == "failed"
+
+
+def test_simulate_would_ignored_when_both_switches_off(tmp_path, monkeypatch):
+    """即使判定可通过，两开关均关时实际会忽略。"""
+    api, store, _, _ = make_api(tmp_path)
+    _wire_simulate_audit(api)
+    run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            auto_audit_enabled=False,
+            review_send_enabled=False,
+            join_questions=[{"question": "口令？", "answers": ["溪流"]}],
+        )
+    )
+    monkeypatch.setattr(api_module, "request", FakeRequest(_simulate_payload()))
+    result = response_data(run(api.simulate()))
+
+    data = result["data"]
+    assert data["final"]["verdict"] == "correct"
+    assert data["would"] == "ignored"

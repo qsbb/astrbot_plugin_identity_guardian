@@ -125,6 +125,28 @@ def test_popover_has_join_question_preset_editor():
     assert ".jq-item" in css
 
 
+def test_page_has_simulate_card():
+    """模拟申请卡片：选群、问题、答案、开始测试按钮与结果区。"""
+    html = read_page("index.html")
+    js = read_page("app.js")
+    css = read_page("style.css")
+    for marker in (
+        'id="simulate-group"',
+        'id="simulate-question"',
+        'id="simulate-answer"',
+        'id="simulate-run"',
+        'id="simulate-result"',
+        'id="simulate-error"',
+    ):
+        assert marker in html
+    assert 'apiPost("simulate"' in js
+    assert "renderSimulateGroupOptions" in js
+    assert "renderSimulateResult" in js
+    assert "SIMULATE_WOULD_LABELS" in js
+    assert "runSimulate" in js
+    assert ".simulate-result" in css
+
+
 def test_mobile_layout_uses_non_overlapping_labeled_rows():
     css = read_page("style.css")
     assert "@media (max-width: 900px)" in css

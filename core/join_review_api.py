@@ -12,12 +12,13 @@ except ImportError:  # pragma: no cover - isolated unit tests mock AstrBot
     request = None
 
 from .group_discovery import JoinedGroup, discover_joined_groups
-from .join_review import GuardBlockedError, JoinReviewRuntime
+from .join_review import GuardBlockedError, JoinReviewRuntime, resolve_presets
 from .join_review_store import (
     JoinReviewStore,
     RequestNotActionable,
     ValidationError,
 )
+from .models import JoinDecision
 
 PLUGIN_ID = "astrbot_plugin_identity_guardian"
 ROUTE_PREFIX = f"/{PLUGIN_ID}/join-review"
@@ -43,12 +44,15 @@ class JoinReviewPageAPI:
         store: JoinReviewStore,
         runtime: JoinReviewRuntime,
         logger: Any,
+        ensure_llm: Any = None,
     ) -> None:
         self.context = context
         self.config = config
         self.store = store
         self.runtime = runtime
         self.logger = logger
+        # 模拟诊断前确保审核 LLM caller 已绑定（main 的延迟绑定钩子）。
+        self.ensure_llm = ensure_llm
 
     def register(self) -> bool:
         register = getattr(self.context, "register_web_api", None)
@@ -65,6 +69,7 @@ class JoinReviewPageAPI:
             ("requests", self.requests, ["GET"], "读取入群待审申请"),
             ("approve", self.approve, ["POST"], "批准入群申请"),
             ("reject", self.reject, ["POST"], "驳回入群申请"),
+            ("simulate", self.simulate, ["POST"], "模拟入群申请诊断（零副作用）"),
         )
         for suffix, handler, methods, description in routes:
             register(f"{ROUTE_PREFIX}/{suffix}", handler, methods, description)
@@ -332,6 +337,84 @@ class JoinReviewPageAPI:
 
     async def reject(self) -> Any:
         return await self._process(approve=False)
+
+    async def simulate(self) -> Any:
+        """模拟一次入群申请，走真实三段自动审核链路并返回逐步诊断。
+
+        零副作用：不触平台批准/拒绝 API、不写待审记录、不发通知/推送、
+        不写审计日志。``would`` 仅按该群当前开关说明实际事件会发生什么。
+        """
+        payload = await self._payload()
+        if payload is None:
+            return self._error("invalid_request")
+        allowed = {"platform_id", "group_id", "question", "answer"}
+        if not set(payload) <= allowed or not {
+            "platform_id",
+            "group_id",
+            "answer",
+        } <= set(payload):
+            return self._error("invalid_request")
+        question = str(payload.get("question") or "").strip()
+        answer = str(payload.get("answer") or "").strip()
+        if not answer:
+            return self._error("invalid_answer")
+        if len(question) > 2048 or len(answer) > 2048:
+            return self._error("simulate_text_too_long")
+        try:
+            await self._validate_config_scope(payload, await self._discovered())
+            config = await self.store.get_group_config(
+                payload["platform_id"], payload["group_id"]
+            )
+        except ValidationError as exc:
+            return self._error(str(exc))
+        if callable(self.ensure_llm):
+            try:
+                self.ensure_llm()
+            except Exception:
+                pass
+        try:
+            presets = resolve_presets(config)
+            report = await self.runtime.audit.simulate_auto_audit(
+                question=question,
+                answer=answer,
+                group_id=str(payload["group_id"]).strip(),
+                configured_questions=presets,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "[idg] join-review simulate failed: %s", type(exc).__name__
+            )
+            return self._error("simulate_failed", 500)
+        final = report["final"]
+        decision = JoinDecision(
+            verdict=str(final.get("verdict", "uncertain")),
+            confidence=float(final.get("confidence", 0.0)),
+            reason=str(final.get("reason", "")),
+        )
+        approvable = self.runtime.audit.is_approvable(decision)
+        if not config.auto_audit_enabled and not config.review_send_enabled:
+            would = "ignored"
+        elif config.auto_audit_enabled and approvable:
+            would = "approve"
+        elif config.review_send_enabled:
+            would = "pending_review"
+        else:
+            would = "left_on_platform"
+        presets_source = (
+            "group"
+            if config.join_questions
+            else ("global" if getattr(self.config, "join_questions", []) else "none")
+        )
+        return self._response(
+            {
+                "data": {
+                    "stages": report["stages"],
+                    "final": report["final"],
+                    "would": would,
+                    "presets_source": presets_source,
+                }
+            }
+        )
 
 
 __all__ = ["JoinReviewPageAPI", "ROUTE_PREFIX"]

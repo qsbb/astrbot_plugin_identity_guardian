@@ -207,6 +207,7 @@ class IdentityGuardianPlugin(Star):
             store=self.join_review_store,
             runtime=self.join_review,
             logger=self.logger,
+            ensure_llm=self._ensure_llm_caller,
         )
         self.join_review_page_available = self.join_review_page_api.register()
 

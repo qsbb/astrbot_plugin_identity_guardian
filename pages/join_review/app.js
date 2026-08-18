@@ -40,6 +40,10 @@ const API_ERROR_MESSAGES = {
   busy: "该申请正在被其他管理员处理",
   platform_error: "平台操作失败，申请仍未完成",
   guard_blocked: "插件已紧急停止或已熔断，恢复后才能处理入群申请",
+  invalid_request: "请求参数不完整",
+  invalid_answer: "请输入申请人答案",
+  simulate_text_too_long: "问题或答案超长（上限 2048 字）",
+  simulate_failed: "模拟判定失败，请查看插件日志",
 };
 
 function $(selector, root = document) {
@@ -319,7 +323,95 @@ function renderGroups() {
   $("#legacy-notice").classList.toggle("hidden", !state.legacyAvailable);
   updateBatchUi();
   updateStats();
+  renderSimulateGroupOptions();
   renderOpenPopover();
+}
+
+// ------------------------------------------------------------------
+// 模拟申请诊断：零副作用，走真实三段审核链路
+// ------------------------------------------------------------------
+
+const SIMULATE_STAGE_LABELS = { preset: "预设判定", knowledge: "知联动判定", fallback: "兜底" };
+const SIMULATE_OUTCOME_BADGES = { passed: ["通过", "good"], failed: ["未通过", "bad"], skipped: ["跳过", ""] };
+const SIMULATE_WOULD_LABELS = {
+  approve: "实际发生时：批准该申请",
+  left_on_platform: "实际发生时：保持平台待审（忽略）",
+  pending_review: "实际发生时：转人工待审并推送",
+  ignored: "实际发生时：忽略（该群两个开关均关闭）",
+};
+const SIMULATE_VERDICT_LABELS = { correct: "建议通过", incorrect: "建议拒绝", uncertain: "不确定", unavailable: "不可用" };
+
+function renderSimulateGroupOptions() {
+  const select = $("#simulate-group");
+  if (!select) return;
+  const current = select.value;
+  const options = state.groups.filter((group) => group.joined && group.can_review);
+  select.innerHTML = options.length
+    ? options.map((group) => {
+      const key = groupKey(group.platform_id, group.group_id);
+      return `<option value="${escapeHtml(key)}">${escapeHtml(group.group_name)}（${escapeHtml(group.group_id)}）</option>`;
+    }).join("")
+    : '<option value="">暂无可审核群</option>';
+  if (options.some((group) => groupKey(group.platform_id, group.group_id) === current)) {
+    select.value = current;
+  }
+}
+
+function renderSimulateResult(data) {
+  const result = $("#simulate-result");
+  const stages = Array.isArray(data?.stages) ? data.stages : [];
+  const final = data?.final && typeof data.final === "object" ? data.final : {};
+  const rows = stages.map((stage) => {
+    const stageName = SIMULATE_STAGE_LABELS[stage.stage] || String(stage.stage || "未知阶段");
+    const [outcomeLabel, badgeClass] = SIMULATE_OUTCOME_BADGES[stage.outcome] || [String(stage.outcome || ""), ""];
+    return `<div class="simulate-stage"><span class="status-badge ${badgeClass}">${stageName} · ${outcomeLabel}</span><span class="simulate-detail">${escapeHtml(stage.detail)}</span></div>`;
+  }).join("");
+  const verdict = SIMULATE_VERDICT_LABELS[final.verdict] || String(final.verdict || "未知");
+  const confidence = Number.isFinite(Number(final.confidence)) ? Number(final.confidence).toFixed(2) : "0.00";
+  const would = SIMULATE_WOULD_LABELS[data?.would] || "";
+  const presetsSource = { group: "按群预设", global: "全局回退预设", none: "无预设" }[data?.presets_source] || "";
+  result.innerHTML = `${rows}
+    <div class="simulate-final">
+      <strong>最终结论：${escapeHtml(verdict)}（置信度 ${confidence}）</strong>
+      <span class="simulate-detail">${escapeHtml(final.reason || "")}${presetsSource ? ` · 预设来源：${presetsSource}` : ""}</span>
+      <span class="simulate-would">${escapeHtml(would)}（仅说明，未执行任何操作）</span>
+    </div>`;
+  result.classList.remove("hidden");
+}
+
+async function runSimulate() {
+  const button = $("#simulate-run");
+  if (button.getAttribute("aria-busy") === "true") return;
+  const errorEl = $("#simulate-error");
+  errorEl.classList.add("hidden");
+  $("#simulate-result").classList.add("hidden");
+  const group = state.groupMap.get($("#simulate-group").value);
+  if (!group) {
+    errorEl.textContent = "请选择要模拟的群";
+    errorEl.classList.remove("hidden");
+    return;
+  }
+  const answer = $("#simulate-answer").value.trim();
+  if (!answer) {
+    errorEl.textContent = "请输入申请人答案";
+    errorEl.classList.remove("hidden");
+    return;
+  }
+  setButtonBusy(button, true, "判定中…");
+  try {
+    const data = await apiPost("simulate", {
+      platform_id: group.platform_id,
+      group_id: group.group_id,
+      question: $("#simulate-question").value.trim(),
+      answer: answer,
+    });
+    renderSimulateResult(data);
+  } catch (error) {
+    errorEl.textContent = error?.message || String(error || "模拟失败");
+    errorEl.classList.remove("hidden");
+  } finally {
+    setButtonBusy(button, false);
+  }
 }
 
 // ------------------------------------------------------------------
@@ -751,6 +843,7 @@ function syncToggleLabel(input) {
 
 function bindEvents() {
   $("#refresh-joined").addEventListener("click", refreshJoinedGroups);
+  $("#simulate-run").addEventListener("click", runSimulate);
   $("#refresh-requests").addEventListener("click", async (event) => {
     const button = event.currentTarget;
     if (button.getAttribute("aria-busy") === "true") return;

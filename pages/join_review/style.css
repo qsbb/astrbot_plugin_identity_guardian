@@ -1100,3 +1100,48 @@ input[type="checkbox"] {
   outline: none;
   border-color: var(--accent);
 }
+
+/* 模拟申请诊断卡片 */
+.simulate-form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  max-width: 560px;
+}
+
+.simulate-result {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  padding: 12px;
+  background: var(--panel-3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+}
+
+.simulate-stage {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.simulate-detail {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.simulate-final {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  display: grid;
+  gap: 4px;
+  font-size: 15px;
+}
+
+.simulate-would {
+  color: var(--accent);
+  font-weight: 600;
+}
