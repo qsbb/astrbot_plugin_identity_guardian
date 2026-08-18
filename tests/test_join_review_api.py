@@ -99,6 +99,8 @@ def test_routes_use_join_review_prefix_and_dashboard_registration(tmp_path):
         f"{ROUTE_PREFIX}/approve",
         f"{ROUTE_PREFIX}/reject",
         f"{ROUTE_PREFIX}/simulate",
+        f"{ROUTE_PREFIX}/settings",
+        f"{ROUTE_PREFIX}/settings/update",
     }
     assert all(len(route) == 4 for route in routes)
 
@@ -711,3 +713,141 @@ def test_simulate_result_reply_hook_failure_keeps_diagnosis(tmp_path, monkeypatc
     assert result["success"] is True
     assert result["data"]["would"] == "pending_review"
     assert result["data"]["result_reply_preview"] is None
+
+
+# ----------------------------------------------------- 全局设置（settings）
+
+
+def _settings_payload(**overrides):
+    payload = {
+        "audit_llm_provider": "gpt-a",
+        "enable_active_learner_recall": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_settings_get_returns_current_values_and_providers(tmp_path):
+    api, _, _, _ = make_api(tmp_path)
+    api.config = SimpleNamespace(
+        join_audit_mode="approve_only",
+        audit_llm_provider="gpt-a",
+        enable_active_learner_recall=True,
+    )
+    api.list_providers = lambda: [
+        {"id": "gpt-a", "label": "gpt-a（gpt-4o）"},
+        {"id": "gpt-b", "label": "gpt-b"},
+        {"id": "", "label": "无 id 应被过滤"},
+        "不是字典",
+    ]
+
+    result = response_data(run(api.settings()))
+
+    data = result["data"]
+    assert data["audit_llm_provider"] == "gpt-a"
+    assert data["enable_active_learner_recall"] is True
+    assert data["providers"] == [
+        {"id": "gpt-a", "label": "gpt-a（gpt-4o）"},
+        {"id": "gpt-b", "label": "gpt-b"},
+    ]
+
+
+def test_settings_get_tolerates_provider_listing_failure(tmp_path):
+    api, _, _, _ = make_api(tmp_path)
+
+    def boom():
+        raise RuntimeError("provider manager down")
+
+    api.list_providers = boom
+    result = response_data(run(api.settings()))
+
+    data = result["data"]
+    assert data["providers"] == []
+    assert data["audit_llm_provider"] == ""
+    assert data["enable_active_learner_recall"] is False
+
+
+def test_settings_update_rejects_invalid_payload(tmp_path, monkeypatch):
+    api, _, _, _ = make_api(tmp_path)
+    api.list_providers = lambda: [{"id": "gpt-a", "label": "gpt-a"}]
+
+    # 缺字段 / 多字段
+    monkeypatch.setattr(api_module, "request", FakeRequest({"audit_llm_provider": ""}))
+    result = response_data(run(api.update_settings()))
+    assert result["success"] is False and result["error"] == "invalid_request"
+
+    # 开关必须 bool
+    monkeypatch.setattr(
+        api_module,
+        "request",
+        FakeRequest(_settings_payload(enable_active_learner_recall="yes")),
+    )
+    result = response_data(run(api.update_settings()))
+    assert result["success"] is False and result["error"] == "invalid_recall_flag"
+
+    # provider id 必须为空或在可用列表中
+    monkeypatch.setattr(
+        api_module,
+        "request",
+        FakeRequest(_settings_payload(audit_llm_provider="ghost")),
+    )
+    result = response_data(run(api.update_settings()))
+    assert result["success"] is False and result["error"] == "invalid_provider"
+
+
+def test_settings_update_calls_hook_and_echoes(tmp_path, monkeypatch):
+    """合法请求：钩子收到正确参数，响应回显生效值。"""
+    api, _, _, _ = make_api(tmp_path)
+    api.list_providers = lambda: [{"id": "gpt-a", "label": "gpt-a"}]
+    calls = []
+
+    async def save(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True}
+
+    api.save_settings = save
+    monkeypatch.setattr(api_module, "request", FakeRequest(_settings_payload()))
+    result = response_data(run(api.update_settings()))
+
+    assert result["success"] is True
+    assert calls == [
+        {"audit_llm_provider": "gpt-a", "enable_active_learner_recall": True}
+    ]
+    assert result["data"] == {
+        "audit_llm_provider": "gpt-a",
+        "enable_active_learner_recall": True,
+    }
+
+    # 空 provider id（恢复默认主对话）跳过列表校验
+    monkeypatch.setattr(
+        api_module, "request", FakeRequest(_settings_payload(audit_llm_provider=" "))
+    )
+    result = response_data(run(api.update_settings()))
+    assert result["success"] is True
+    assert calls[-1]["audit_llm_provider"] == ""
+
+
+def test_settings_update_hook_failure_returns_error(tmp_path, monkeypatch):
+    """钩子失败/异常：返回错误，不假装成功。"""
+    api, _, _, _ = make_api(tmp_path)
+    api.list_providers = lambda: [{"id": "gpt-a", "label": "gpt-a"}]
+
+    async def save_fail(**kwargs):
+        return {"ok": False, "error": "config_save_failed"}
+
+    api.save_settings = save_fail
+    monkeypatch.setattr(api_module, "request", FakeRequest(_settings_payload()))
+    result = response_data(run(api.update_settings()))
+    assert result["success"] is False and result["error"] == "config_save_failed"
+
+    async def save_boom(**kwargs):
+        raise RuntimeError("disk full")
+
+    api.save_settings = save_boom
+    result = response_data(run(api.update_settings()))
+    assert result["success"] is False and result["error"] == "settings_save_failed"
+
+    # 未注入钩子
+    api.save_settings = None
+    result = response_data(run(api.update_settings()))
+    assert result["success"] is False and result["error"] == "settings_unavailable"

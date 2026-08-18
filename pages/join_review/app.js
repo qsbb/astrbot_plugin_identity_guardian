@@ -44,6 +44,13 @@ const API_ERROR_MESSAGES = {
   invalid_answer: "请输入申请人答案",
   simulate_text_too_long: "问题或答案超长（上限 2048 字）",
   simulate_failed: "模拟判定失败，请查看插件日志",
+  invalid_provider: "审核模型不在可用列表中",
+  invalid_recall_flag: "知联动开关取值无效",
+  settings_unavailable: "设置保存通道不可用",
+  settings_save_failed: "设置保存失败，请查看插件日志",
+  config_unavailable: "插件配置不可写",
+  config_save_failed: "配置写入失败，请查看插件日志",
+  config_save_superseded: "配置已被其他修改覆盖，请刷新后重试",
 };
 
 function $(selector, root = document) {
@@ -816,6 +823,60 @@ async function refreshJoinedGroups() {
   }
 }
 
+// ------------------------------------------------------------------
+// 全局设置：审核模型 / 知联动开关（与插件配置互通，保存立即生效）
+// ------------------------------------------------------------------
+
+async function loadSettings() {
+  const select = $("#settings-audit-provider");
+  const recall = $("#settings-recall");
+  const errorEl = $("#settings-error");
+  try {
+    const data = await apiGet("settings");
+    const providers = Array.isArray(data?.providers) ? data.providers : [];
+    const current = String(data?.audit_llm_provider || "");
+    const options = [{ id: "", label: "默认（主对话 LLM）" }];
+    for (const provider of providers) {
+      const id = String(provider?.id || "");
+      if (id) options.push({ id, label: String(provider?.label || id) });
+    }
+    if (current && !options.some((option) => option.id === current)) {
+      options.push({ id: current, label: `${current}（当前生效，未在列表）` });
+    }
+    select.innerHTML = options.map((option) =>
+      `<option value="${escapeHtml(option.id)}">${escapeHtml(option.label)}</option>`
+    ).join("");
+    select.value = current;
+    recall.checked = data?.enable_active_learner_recall === true;
+    // 模型列表不可用时只保留默认与当前生效值，并给出提示。
+    $("#settings-providers-hint").classList.toggle("hidden", providers.length > 0);
+    errorEl.classList.add("hidden");
+  } catch (error) {
+    errorEl.textContent = error?.message || String(error || "读取设置失败");
+    errorEl.classList.remove("hidden");
+  }
+}
+
+async function saveSettings() {
+  const button = $("#settings-save");
+  if (button.getAttribute("aria-busy") === "true") return;
+  const errorEl = $("#settings-error");
+  errorEl.classList.add("hidden");
+  setButtonBusy(button, true, "保存中…");
+  try {
+    await apiPost("settings/update", {
+      audit_llm_provider: $("#settings-audit-provider").value,
+      enable_active_learner_recall: $("#settings-recall").checked,
+    });
+    showStatus("全局设置已保存，立即生效。");
+  } catch (error) {
+    errorEl.textContent = error?.message || String(error || "保存失败");
+    errorEl.classList.remove("hidden");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
 async function saveGroup(container) {
   const key = container.dataset.groupKey;
   if (!key || state.rowBusy.has(key)) return;
@@ -1012,6 +1073,7 @@ function bindEvents() {
     button.addEventListener("click", () => runBatch(button.dataset.batchAction));
   }
   $("#apply-legacy").addEventListener("click", () => runBatch("apply_legacy"));
+  $("#settings-save").addEventListener("click", saveSettings);
 
   $("#requests-list").addEventListener("click", (event) => {
     const confirmButton = event.target.closest("[data-reject-confirm]");
@@ -1048,6 +1110,8 @@ async function init() {
   bridge = await resolveBridge();
   if (typeof bridge.ready === "function") await bridge.ready();
   await loadAll();
+  // 设置读取失败只影响设置卡内联提示，不阻断主页面。
+  await loadSettings();
 }
 
 init().catch(showPageError);

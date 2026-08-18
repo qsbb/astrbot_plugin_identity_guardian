@@ -10,6 +10,7 @@
 
 - 「模拟申请」诊断新增推送文案预览：模拟结果为转人工待审（会触发推送）时，结果区展示该申请实际会推送的文案——与生产推送共用同一渲染路径（`render_push_preview`），formatted 展示模板全文（含看法行与引用回复审批引导），natural 真实调用 `push_llm_provider` 生成并带入目标群会话人格与最近 ≤10 条群消息上下文（取不到静默跳过），natural 失败回退模板时标注 `natural_fallback_formatted`；预览附样式徽章与人格/LLM/群消息条数元信息，只生成不发送。
 - 「模拟申请」诊断新增审批结果回复预览：转人工待审时结果区展示「若同意/若拒绝」两种结局下 bot 的回应——生产结果回复的文案生成抽为 `_render_result_reply`（`_send_result_reply` 改为调它再发送，模拟预览调它只取文案，同一实现不漂移），LLM 空/失败时展示固定回退文案并标注 `fallback`/`模板`；预览经新 `result_reply_preview` 钩子注入，钩子异常不影响主诊断结果。
+- 入群审核 Page 新增「全局设置」卡片与新路由 GET `settings` / POST `settings/update`：可在 Page 查看并修改审核模型（`audit_llm_provider`，下拉列举当前实例可用 LLM provider，含「默认（主对话 LLM）」项，列表获取失败时降级显示当前生效值）与知联动开关（`enable_active_learner_recall`）；写回沿用 `save_config_async` 原子提交 + 提交后重建 Config 的模式，运行态立即生效，失败不落盘并返回可读错误。
 
 ### 变更
 

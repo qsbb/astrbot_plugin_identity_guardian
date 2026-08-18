@@ -47,6 +47,8 @@ class JoinReviewPageAPI:
         ensure_llm: Any = None,
         push_preview: Any = None,
         result_reply_preview: Any = None,
+        list_providers: Any = None,
+        save_settings: Any = None,
     ) -> None:
         self.context = context
         self.config = config
@@ -59,6 +61,9 @@ class JoinReviewPageAPI:
         self.push_preview = push_preview
         # 模拟申请的审批结果回复预览钩子（main 注入，与生产同一渲染链路）。
         self.result_reply_preview = result_reply_preview
+        # 全局设置：列举可用 LLM provider / 写回插件配置（main 注入）。
+        self.list_providers = list_providers
+        self.save_settings = save_settings
 
     def register(self) -> bool:
         register = getattr(self.context, "register_web_api", None)
@@ -76,6 +81,8 @@ class JoinReviewPageAPI:
             ("approve", self.approve, ["POST"], "批准入群申请"),
             ("reject", self.reject, ["POST"], "驳回入群申请"),
             ("simulate", self.simulate, ["POST"], "模拟入群申请诊断（零副作用）"),
+            ("settings", self.settings, ["GET"], "读取入群审核全局设置"),
+            ("settings/update", self.update_settings, ["POST"], "保存入群审核全局设置"),
         )
         for suffix, handler, methods, description in routes:
             register(f"{ROUTE_PREFIX}/{suffix}", handler, methods, description)
@@ -461,6 +468,78 @@ class JoinReviewPageAPI:
                     "presets_source": presets_source,
                     "push_preview": preview,
                     "result_reply_preview": result_reply,
+                }
+            }
+        )
+
+    def _provider_options(self) -> list[dict[str, str]]:
+        """经 main 注入钩子列举可用 LLM provider；失败/未注入返回空列表。"""
+        if not callable(self.list_providers):
+            return []
+        try:
+            providers = self.list_providers() or []
+        except Exception:
+            return []
+        return [
+            {"id": str(item.get("id") or ""), "label": str(item.get("label") or "")}
+            for item in providers
+            if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+        ]
+
+    async def settings(self) -> Any:
+        """读取全局设置：当前生效值 + 可用 provider 列表。"""
+        return self._response(
+            {
+                "data": {
+                    "audit_llm_provider": str(
+                        getattr(self.config, "audit_llm_provider", "") or ""
+                    ),
+                    "enable_active_learner_recall": bool(
+                        getattr(self.config, "enable_active_learner_recall", False)
+                    ),
+                    "providers": self._provider_options(),
+                }
+            }
+        )
+
+    async def update_settings(self) -> Any:
+        """保存全局设置：严格字段校验后经 main 钩子原子写回，失败不落盘。"""
+        payload = await self._payload()
+        if payload is None:
+            return self._error("invalid_request")
+        allowed = {"audit_llm_provider", "enable_active_learner_recall"}
+        if not set(payload) <= allowed or not allowed <= set(payload):
+            return self._error("invalid_request")
+        provider_id = str(payload.get("audit_llm_provider") or "").strip()
+        recall = payload.get("enable_active_learner_recall")
+        if not isinstance(recall, bool):
+            return self._error("invalid_recall_flag")
+        if provider_id and provider_id not in {
+            item["id"] for item in self._provider_options()
+        }:
+            return self._error("invalid_provider")
+        if not callable(self.save_settings):
+            return self._error("settings_unavailable", 503)
+        try:
+            result = await self.save_settings(
+                audit_llm_provider=provider_id,
+                enable_active_learner_recall=recall,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "[idg] join-review settings save failed: %s", type(exc).__name__
+            )
+            return self._error("settings_save_failed", 500)
+        if not isinstance(result, Mapping) or result.get("ok") is not True:
+            code = "settings_save_failed"
+            if isinstance(result, Mapping) and str(result.get("error") or "").strip():
+                code = str(result["error"])
+            return self._error(code, 500)
+        return self._response(
+            {
+                "data": {
+                    "audit_llm_provider": provider_id,
+                    "enable_active_learner_recall": recall,
                 }
             }
         )

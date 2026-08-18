@@ -1578,3 +1578,111 @@ def test_simulate_result_reply_preview_marks_fallback_per_outcome():
     assert preview["approved"]["text"] == "已同意 QQ （模拟） 的入群申请。"
     assert preview["rejected"]["fallback"] is True
     assert preview["rejected"]["text"] == "已拒绝 QQ （模拟） 的入群申请。"
+
+
+# ----------------------------------------------------- Page 全局设置
+
+
+def test_list_llm_providers_parses_meta():
+    """_list_llm_providers：取 meta().id/model 组标签，过滤无 id 项。"""
+    plugin = _preview_wired_plugin()
+
+    class StubProvider:
+        def __init__(self, pid, model=""):
+            self._id, self._model = pid, model
+
+        def meta(self):
+            return SimpleNamespace(id=self._id, model=self._model)
+
+    plugin.context = SimpleNamespace(
+        get_all_providers=lambda: [
+            StubProvider("gpt-a", "gpt-4o"),
+            StubProvider("gpt-b"),
+            StubProvider("", "no-id"),
+        ]
+    )
+
+    assert plugin._list_llm_providers() == [
+        {"id": "gpt-a", "label": "gpt-a（gpt-4o）"},
+        {"id": "gpt-b", "label": "gpt-b"},
+    ]
+
+    # 框架无 get_all_providers / 列举抛异常：静默返回空列表
+    plugin.context = SimpleNamespace()
+    assert plugin._list_llm_providers() == []
+
+    def boom():
+        raise RuntimeError("provider manager down")
+
+    plugin.context = SimpleNamespace(get_all_providers=boom)
+    assert plugin._list_llm_providers() == []
+
+
+def test_update_review_settings_commits_and_rebuilds_config():
+    """写回成功：原子提交后 Config 就地重建，运行态立即生效。"""
+    plugin = _preview_wired_plugin()
+    plugin.config = main.Config(
+        {"audit_llm_provider": "", "enable_active_learner_recall": False}
+    )
+    saved = []
+
+    class Native:
+        async def save_config_async(self, changes):
+            saved.append(dict(changes))
+            return True
+
+    plugin._native_config = Native()
+
+    result = asyncio.run(
+        plugin._update_review_settings(
+            audit_llm_provider="gpt-a", enable_active_learner_recall=True
+        )
+    )
+
+    assert result == {"ok": True}
+    assert saved == [
+        {"audit_llm_provider": "gpt-a", "enable_active_learner_recall": True}
+    ]
+    # 同一 Config 对象属性读取即新值
+    assert plugin.config.audit_llm_provider == "gpt-a"
+    assert plugin.config.enable_active_learner_recall is True
+
+
+def test_update_review_settings_failure_keeps_config():
+    """写回失败不落盘不重建：superseded / 异常 / 不可写三种失败。"""
+    plugin = _preview_wired_plugin()
+    plugin.config = main.Config({"audit_llm_provider": "old"})
+
+    class Superseded:
+        async def save_config_async(self, changes):
+            return False
+
+    plugin._native_config = Superseded()
+    result = asyncio.run(
+        plugin._update_review_settings(
+            audit_llm_provider="gpt-a", enable_active_learner_recall=True
+        )
+    )
+    assert result["ok"] is False and result["error"] == "config_save_superseded"
+    assert plugin.config.audit_llm_provider == "old"
+
+    class Boom:
+        async def save_config_async(self, changes):
+            raise RuntimeError("disk full")
+
+    plugin._native_config = Boom()
+    result = asyncio.run(
+        plugin._update_review_settings(
+            audit_llm_provider="gpt-a", enable_active_learner_recall=True
+        )
+    )
+    assert result["ok"] is False and result["error"] == "config_save_failed"
+    assert plugin.config.audit_llm_provider == "old"
+
+    plugin._native_config = None
+    result = asyncio.run(
+        plugin._update_review_settings(
+            audit_llm_provider="gpt-a", enable_active_learner_recall=False
+        )
+    )
+    assert result == {"ok": False, "error": "config_unavailable"}

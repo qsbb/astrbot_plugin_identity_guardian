@@ -212,6 +212,8 @@ class IdentityGuardianPlugin(Star):
             ensure_llm=self._ensure_llm_caller,
             push_preview=self._simulate_push_preview,
             result_reply_preview=self._simulate_result_reply_preview,
+            list_providers=self._list_llm_providers,
+            save_settings=self._update_review_settings,
         )
         self.join_review_page_available = self.join_review_page_api.register()
 
@@ -825,6 +827,72 @@ class IdentityGuardianPlugin(Star):
                 fallback="已拒绝 QQ （模拟） 的入群申请。",
             ),
         }
+
+    # ------------------------------------------------------------------
+    # Page 全局设置（审核模型 / 知联动开关）
+    # ------------------------------------------------------------------
+
+    def _list_llm_providers(self) -> list[dict[str, str]]:
+        """列举当前实例可用的文本生成 LLM provider（Chat_Completion 类型）。
+
+        依据框架 ``Context.get_all_providers()``（astrbot/core/star/context.py），
+        id/模型取自 ``Provider.meta()``（astrbot/core/provider/provider.py
+        ``ProviderMeta.id``/``model``）。任何一步失败返回空列表，Page 侧
+        降级为仅「默认」选项。
+        """
+        try:
+            get_all = getattr(self.context, "get_all_providers", None)
+            if not callable(get_all):
+                return []
+            result: dict[str, str] = {}
+            for provider in get_all() or []:
+                try:
+                    meta = provider.meta()
+                except Exception:
+                    continue
+                pid = str(getattr(meta, "id", "") or "").strip()
+                if not pid:
+                    continue
+                model = str(getattr(meta, "model", "") or "").strip()
+                label = f"{pid}（{model}）" if model and model != pid else pid
+                result.setdefault(pid, label)
+            return [{"id": pid, "label": label} for pid, label in result.items()]
+        except Exception as exc:
+            self.logger.debug("%s list providers failed: %s", LOG_PREFIX, exc)
+            return []
+
+    async def _update_review_settings(
+        self,
+        *,
+        audit_llm_provider: str,
+        enable_active_learner_recall: bool,
+    ) -> dict[str, Any]:
+        """Page 全局设置写回：原子提交 + 提交后重建 Config，运行态立即生效。
+
+        沿用 identity_control_plane 的持久化模式：``save_config_async``
+        返回 True 才落盘成功；随后用 ``Config({**_raw, **changes})`` 重建
+        并就地替换 ``self.config._raw``——各服务持有同一 Config 对象，
+        属性读取即刻看到新值。失败不落盘并返回错误码。
+        """
+        native = getattr(self, "_native_config", None)
+        if not callable(getattr(native, "save_config_async", None)):
+            return {"ok": False, "error": "config_unavailable"}
+        changes = {
+            "audit_llm_provider": audit_llm_provider,
+            "enable_active_learner_recall": enable_active_learner_recall,
+        }
+        try:
+            committed = await native.save_config_async(changes)
+        except Exception as exc:
+            self.logger.warning(
+                "%s review settings save failed: %s", LOG_PREFIX, type(exc).__name__
+            )
+            return {"ok": False, "error": "config_save_failed"}
+        if committed is not True:
+            return {"ok": False, "error": "config_save_superseded"}
+        refreshed = Config({**self.config._raw, **changes})
+        self.config._raw = refreshed._raw
+        return {"ok": True}
 
     def _ensure_llm_caller(self) -> None:
         """延迟绑定 LLM caller。"""

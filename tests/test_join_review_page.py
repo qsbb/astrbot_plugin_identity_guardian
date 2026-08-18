@@ -186,6 +186,33 @@ def test_page_simulate_result_renders_result_reply_preview():
     assert ".simulate-reply-preview" in css
 
 
+def test_page_has_settings_card():
+    """全局设置卡片：审核模型下拉、知联动开关、保存按钮与错误条。"""
+    html = read_page("index.html")
+    js = read_page("app.js")
+    for marker in (
+        'id="settings-title"',
+        'id="settings-audit-provider"',
+        'id="settings-recall"',
+        'id="settings-save"',
+        'id="settings-error"',
+        'id="settings-providers-hint"',
+        "默认（主对话 LLM）",
+    ):
+        assert marker in html
+    # 设置卡在群配置卡之前
+    assert html.index('id="settings-title"') < html.index('id="groups-title"')
+    for marker in (
+        'apiGet("settings"',
+        'apiPost("settings/update"',
+        "loadSettings",
+        "saveSettings",
+        "当前生效，未在列表",
+        "全局设置已保存，立即生效。",
+    ):
+        assert marker in js
+
+
 def test_mobile_layout_uses_non_overlapping_labeled_rows():
     css = read_page("style.css")
     assert "@media (max-width: 900px)" in css

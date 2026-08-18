@@ -40,6 +40,24 @@
       </div>
     </section>
 
+    <article class="card" aria-labelledby="settings-title">
+      <div class="section-heading">
+        <div>
+          <h2 id="settings-title">全局设置</h2>
+          <p>审核模型与知联动开关，与插件配置互通、保存后立即生效。</p>
+        </div>
+      </div>
+      <div class="simulate-form">
+        <label class="popover-field"><span>审核模型</span><select id="settings-audit-provider" class="inline-select"><option value="">默认（主对话 LLM）</option></select></label>
+        <p id="settings-providers-hint" class="simulate-detail hidden">未能获取模型列表，仅显示当前生效值；如需指定其他模型，请到插件配置页修改。</p>
+        <label class="toggle-field"><input id="settings-recall" type="checkbox"><span>知联动：预设未命中时查询知知识库辅助判定</span></label>
+        <div class="popover-actions">
+          <button id="settings-save" class="button compact" type="button">保存设置</button>
+        </div>
+      </div>
+      <div id="settings-error" class="notice error hidden" role="alert"></div>
+    </article>
+
     <article class="card" aria-labelledby="groups-title">
       <div class="section-heading">
         <div>
