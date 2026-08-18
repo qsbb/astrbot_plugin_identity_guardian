@@ -373,7 +373,8 @@ def test_pinned_and_push_groups_roundtrip_and_validation(tmp_path):
     other = run(reloaded.get_group_config("bot-a", "10002"))
     assert other.pinned is False
     assert other.push_group_ids == ()
-    assert other.push_style == "formatted"
+    # 未显式配置过的群：push_style 默认 natural（LLM 不可用时渲染层回退格式化）
+    assert other.push_style == "natural"
 
     with pytest.raises(ValidationError, match="invalid_push_group_id"):
         run(

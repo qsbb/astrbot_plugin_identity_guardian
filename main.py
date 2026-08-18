@@ -52,6 +52,7 @@ from .core.prompts import (
     SECURITY_RULES,
     build_identity_prompt,
     build_reply_judge_prompt,
+    build_result_reply_prompt,
 )
 from .core.quest_session import (
     QUEST_SESSION_AUTH_CONTRACT_NAME,
@@ -1429,7 +1430,12 @@ class IdentityGuardianPlugin(Star):
                     return
             umo = f"{platform_id}:GroupMessage:{group_id}"
             if request.status not in ACTIONABLE_STATUSES:
-                await self._send_group_reply(umo, "该申请已被处理。")
+                await self._send_result_reply(
+                    umo,
+                    "already_processed",
+                    request,
+                    fallback="该申请已被处理。",
+                )
                 return
             # LLM 语义判断：含糊或解析失败时静默，不打扰群。
             decision = await self._judge_push_reply(reply_text)
@@ -1447,30 +1453,50 @@ class IdentityGuardianPlugin(Star):
                     reason="" if approve else "管理员群内拒绝",
                 )
             except RequestNotActionable:
-                await self._send_group_reply(umo, "该申请已被其他管理员处理或已过期。")
+                await self._send_result_reply(
+                    umo,
+                    "already_processed",
+                    request,
+                    fallback="该申请已被其他管理员处理或已过期。",
+                )
                 return
             except GuardBlockedError:
-                await self._send_group_reply(
-                    umo, "处理失败：插件已紧急停止或已熔断，请到管理页处理。"
+                await self._send_result_reply(
+                    umo,
+                    "failed",
+                    request,
+                    detail="插件已紧急停止或已熔断",
+                    fallback="处理失败：插件已紧急停止或已熔断，请到管理页处理。",
                 )
                 return
             except Exception as exc:
                 self.logger.warning(
                     "%s push reply process error: %s", LOG_PREFIX, type(exc).__name__
                 )
-                await self._send_group_reply(
-                    umo, "处理失败：内部错误，请到管理页处理。"
+                await self._send_result_reply(
+                    umo,
+                    "failed",
+                    request,
+                    detail="内部错误",
+                    fallback="处理失败：内部错误，请到管理页处理。",
                 )
                 return
             if updated.status in ("approved", "rejected"):
                 verb = "已同意" if updated.status == "approved" else "已拒绝"
-                await self._send_group_reply(
-                    umo, f"{verb} QQ {request.user_id} 的入群申请。"
+                await self._send_result_reply(
+                    umo,
+                    updated.status,
+                    request,
+                    fallback=f"{verb} QQ {request.user_id} 的入群申请。",
                 )
             else:
                 reason = updated.platform_error or "平台操作失败"
-                await self._send_group_reply(
-                    umo, f"处理失败：{reason}，请到管理页处理。"
+                await self._send_result_reply(
+                    umo,
+                    "failed",
+                    request,
+                    detail=reason,
+                    fallback=f"处理失败：{reason}，请到管理页处理。",
                 )
         except Exception as exc:
             self.logger.warning(
@@ -1506,6 +1532,38 @@ class IdentityGuardianPlugin(Star):
             await self.context.send_message(umo, MessageChain(chain=[Plain(text=text)]))
         except Exception as exc:
             self.logger.debug("%s push reply send failed: %s", LOG_PREFIX, exc)
+
+    async def _send_result_reply(
+        self,
+        umo: str,
+        outcome: str,
+        request: Any,
+        *,
+        detail: str = "",
+        fallback: str,
+    ) -> None:
+        """审批结果回复：LLM 按人设措辞，失败/空回退固定文案。
+
+        人格按当前事件所在群（推送群）UMO 取，与推送文案同一规则；LLM 调用
+        走 push_llm_provider。任何一步失败都回退 ``fallback`` 固定文案，
+        保证结果一定有回复。
+        """
+        text = ""
+        try:
+            persona_prompt = await self._get_push_persona_prompt(umo)
+            result = await self._call_push_llm(
+                build_result_reply_prompt(
+                    outcome,
+                    nickname=str(getattr(request, "nickname", "") or ""),
+                    user_id=str(getattr(request, "user_id", "") or ""),
+                    detail=detail,
+                ),
+                persona_prompt,
+            )
+            text = "" if result is None else str(result).strip()
+        except Exception as exc:
+            self.logger.debug("%s result reply render failed: %s", LOG_PREFIX, exc)
+        await self._send_group_reply(umo, text or fallback)
 
     async def _execute_action(
         self,

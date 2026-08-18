@@ -3,8 +3,9 @@
 申请进入人工待审（JoinReviewRuntime 返回 pending_review）后，
 把申请推送到申请所属群按群配置的推送群（``GroupReviewConfig.push_group_ids``），
 推送群留空时回退推送到申请所属群本身。文案样式由按群 ``push_style`` 决定：
-natural 走 LLM（由调用方注入带人格的 caller，失败回退格式化），formatted
-复用入群通知模板并附自动审核看法与引用回复审批引导。
+natural 走 LLM 整段生成（由调用方注入带人格的 caller，失败回退格式化），
+formatted 复用入群通知模板并附看法行——caller 可用时看法由 LLM 一句话生成，
+失败/不可用回退自动审核结论；两种样式都附引用回复审批引导。
 
 推送消息走 OneBot ``send_group_msg`` 以拿到 ``message_id``——引用本条推送
 回复「同意/不同意」的群内审批依赖该 ID 定位申请；发送成功后经
@@ -22,7 +23,7 @@ from .group_discovery import get_aiocqhttp_bot
 from .join_notification import JoinNotificationService
 from .join_review_store import GroupReviewConfig, JoinRequest, JoinReviewStore
 from .onebot import OneBotClient
-from .prompts import build_push_message_prompt
+from .prompts import build_push_message_prompt, build_push_opinion_prompt
 
 PUSH_REPLY_HINT = (
     "同意请引用本条消息回复『同意』，拒绝回复『拒绝』，或到入群审核管理页处理。"
@@ -56,6 +57,7 @@ def _formatted_message(
     config: GroupReviewConfig,
     source_group_name: str,
     decision: Any = None,
+    opinion: str = "",
 ) -> str:
     body = JoinNotificationService.build_message(
         request,
@@ -63,7 +65,33 @@ def _formatted_message(
         source_group_name=source_group_name,
         show_source=True,
     )
-    return f"{body}\n{build_opinion_line(decision)}\n{PUSH_REPLY_HINT}"
+    opinion_line = f"看法：{opinion}" if opinion else build_opinion_line(decision)
+    return f"{body}\n{opinion_line}\n{PUSH_REPLY_HINT}"
+
+
+async def _llm_opinion(
+    request: JoinRequest,
+    source_group_name: str,
+    llm_caller: Any,
+) -> str:
+    """formatted 样式的 LLM 一句话看法；caller 不可用/失败/空结果返回空串。"""
+    if llm_caller is None:
+        return ""
+    try:
+        result = await llm_caller(
+            build_push_opinion_prompt(
+                question=str(getattr(request, "question", "") or ""),
+                answer=str(getattr(request, "answer", "") or ""),
+                nickname=str(getattr(request, "nickname", "") or ""),
+                source_group_name=source_group_name,
+            )
+        )
+    except Exception:
+        return ""
+    if result is None:
+        return ""
+    # 折叠换行并截断，保证看法只占一行。
+    return " ".join(str(result).split())[:120]
 
 
 async def render_push_preview(
@@ -73,13 +101,17 @@ async def render_push_preview(
     llm_caller: Any,
     decision: Any = None,
 ) -> dict[str, str]:
-    """零副作用渲染推送文案，返回 ``{"style", "text"}`` 供诊断预览。
+    """零副作用渲染推送文案，返回 ``{"style", "text", "opinion_source"}``。
 
     与生产推送同一条渲染路径（``RequestPushService.render_message`` 委托本
-    函数），额外标注实际走的样式：natural 空结果或异常回退格式化模板时
-    ``style`` 为 ``natural_fallback_formatted``。
+    函数），额外标注实际走的样式与看法来源：natural 空结果或异常回退格式化
+    模板时 ``style`` 为 ``natural_fallback_formatted``；``opinion_source``
+    为 ``llm``（LLM 生成）/ ``decision``（自动审核结论）/ ``none``（无）。
+    两种样式合计最多一次额外 LLM 调用：natural 整段生成已含看法，不再单独
+    生成；natural 回退格式化时 LLM 刚失败过，看法直接用自动审核结论。
     """
     style = "formatted"
+    opinion = ""
     if config.push_style == "natural" and llm_caller is not None:
         text = ""
         try:
@@ -90,11 +122,22 @@ async def render_push_preview(
         except Exception:
             text = ""
         if text:
-            return {"style": "natural", "text": text}
+            return {"style": "natural", "text": text, "opinion_source": "llm"}
         style = "natural_fallback_formatted"
+    else:
+        opinion = await _llm_opinion(request, source_group_name, llm_caller)
+    if opinion:
+        opinion_source = "llm"
+    elif decision is not None:
+        opinion_source = "decision"
+    else:
+        opinion_source = "none"
     return {
         "style": style,
-        "text": _formatted_message(request, config, source_group_name, decision),
+        "text": _formatted_message(
+            request, config, source_group_name, decision, opinion
+        ),
+        "opinion_source": opinion_source,
     }
 
 

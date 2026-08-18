@@ -1150,6 +1150,7 @@ def test_simulate_push_preview_natural_uses_persona_and_contexts():
 
     assert preview["style"] == "natural"
     assert preview["text"] == "人格化预览文案"
+    assert preview["opinion_source"] == "llm"
     assert preview["persona_used"] is True
     assert preview["provider"] == "push-llm"
     assert preview["contexts_used"] == 1
@@ -1160,16 +1161,18 @@ def test_simulate_push_preview_natural_uses_persona_and_contexts():
     assert contexts == [{"role": "user", "content": "刚聊的话题"}]
 
 
-def test_simulate_push_preview_formatted_skips_llm():
-    """formatted 样式不调 LLM，文案含占位申请人、看法行与审批引导。"""
+def test_simulate_push_preview_formatted_uses_llm_opinion():
+    """formatted 样式预览同样调 push LLM 拿一句话看法（只调一次）。"""
     plugin = _preview_wired_plugin()
     plugin.context = SimpleNamespace(conversation_manager=None)
+    llm_calls = []
 
     async def persona(umo):
         return ""
 
     async def push_llm(prompt, system_prompt="", contexts=None):
-        raise AssertionError("formatted 不应调 LLM")
+        llm_calls.append((prompt, system_prompt, contexts))
+        return "答案靠谱，正是群内暗号"
 
     plugin._get_push_persona_prompt = persona
     plugin._call_push_llm = push_llm
@@ -1187,12 +1190,112 @@ def test_simulate_push_preview_formatted_skips_llm():
     )
 
     assert preview["style"] == "formatted"
+    assert preview["opinion_source"] == "llm"
+    assert "看法：答案靠谱，正是群内暗号" in preview["text"]
     assert "模拟用户" in preview["text"]
-    assert "口令？" in preview["text"]
-    assert "看法：自动审核无法确定" in preview["text"]
     assert "回复『同意』" in preview["text"]
-    assert preview["persona_used"] is False
-    assert preview["contexts_used"] == 0
+    assert len(llm_calls) == 1
+    prompt, _, _ = llm_calls[0]
+    assert "口令？" in prompt and "小河" in prompt
+
+
+def test_simulate_push_preview_formatted_llm_empty_falls_back_to_decision():
+    """formatted 样式 LLM 看法为空：回退自动审核结论行并标注 decision。"""
+    plugin = _preview_wired_plugin()
+    plugin.context = SimpleNamespace(conversation_manager=None)
+
+    async def persona(umo):
+        return ""
+
+    async def push_llm(prompt, system_prompt="", contexts=None):
+        return ""
+
+    plugin._get_push_persona_prompt = persona
+    plugin._call_push_llm = push_llm
+
+    preview = asyncio.run(
+        plugin._simulate_push_preview(
+            platform_id="qq-main",
+            group_id="100",
+            question="口令？",
+            answer="小河",
+            config=_preview_config(style="formatted"),
+            decision=_preview_decision(),
+            source_group_name="申请群",
+        )
+    )
+
+    assert preview["style"] == "formatted"
+    assert preview["opinion_source"] == "decision"
+    assert "看法：自动审核无法确定" in preview["text"]
+
+
+def test_production_push_formatted_also_calls_push_llm_for_opinion(tmp_path):
+    """生产推送路径：formatted 样式也经真实渲染调 push LLM，看法进入文案。"""
+    plugin = _preview_wired_plugin()
+    plugin._stopped = False
+    plugin.context = None
+    plugin.config.enable_api_guard = False
+    plugin.cooldown = SimpleNamespace(check_breaker=lambda: False)
+
+    store = main.JoinReviewStore(tmp_path)
+    asyncio.run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            push_group_ids=["300"],
+            push_style="formatted",
+            include_answer=True,
+        )
+    )
+    plugin.join_review_store = store
+    service = main.RequestPushService(store, main.OneBotClient())
+    request = SimpleNamespace(
+        request_id="r1",
+        platform_id="qq-main",
+        group_id="100",
+        user_id="200",
+        nickname="小明",
+        level="16",
+        question="口令？",
+        answer="溪流",
+    )
+    decision = SimpleNamespace(verdict="uncertain", confidence=0.3, reason="不像")
+    llm_calls, sent = [], []
+
+    async def persona(umo):
+        return "人格 prompt"
+
+    async def push_llm(prompt, system_prompt="", contexts=None):
+        llm_calls.append((prompt, system_prompt))
+        return "答案看着靠谱"
+
+    plugin._get_push_persona_prompt = persona
+    plugin._call_push_llm = push_llm
+
+    class RenderOnlyPush:
+        """只借真实渲染路径、不真正发送的推送桩。"""
+
+        async def push_for_request(
+            self, context, req, config, llm_caller, logger, push_decision=None
+        ):
+            text = await service.render_message(
+                req, config, "申请群", llm_caller, push_decision
+            )
+            sent.append(text)
+            return ["300"], [], []
+
+    plugin.request_push = RenderOnlyPush()
+    asyncio.run(plugin._push_join_request_review(request, decision))
+
+    assert len(llm_calls) == 1
+    prompt, system_prompt = llm_calls[0]
+    assert "口令？" in prompt and "溪流" in prompt
+    # caller 闭包带人格：看法生成也用同一人格 system prompt
+    assert system_prompt == "人格 prompt"
+    assert len(sent) == 1
+    assert "看法：答案看着靠谱" in sent[0]
+    assert "回复『同意』" in sent[0]
 
 
 def test_simulate_push_preview_natural_failure_marks_fallback():
@@ -1222,4 +1325,142 @@ def test_simulate_push_preview_natural_failure_marks_fallback():
     )
 
     assert preview["style"] == "natural_fallback_formatted"
+    # natural 回退后不重试看法生成：看法直接取自动审核结论
+    assert preview["opinion_source"] == "decision"
     assert "入群申请待审核" in preview["text"]
+
+
+# ----------------------------------------------------- 审批结果回复人格化
+
+
+def _wire_result_reply_llm(plugin, *, persona="人格 prompt", text=""):
+    """给回复链路接上人格/结果文案 LLM 桩，返回 (persona_calls, llm_calls)。"""
+    persona_calls, llm_calls = [], []
+
+    async def get_persona(umo):
+        persona_calls.append(umo)
+        return persona
+
+    async def push_llm(prompt, system_prompt="", contexts=None):
+        llm_calls.append((prompt, system_prompt))
+        return text
+
+    plugin._get_push_persona_prompt = get_persona
+    plugin._call_push_llm = push_llm
+    return persona_calls, llm_calls
+
+
+def test_result_reply_prompt_covers_four_outcomes():
+    """结果回复 prompt：四种 outcome 都有描述，含申请人事实与字数限制。"""
+    cases = {
+        "approved": "已同意",
+        "rejected": "已拒绝",
+        "already_processed": "已被处理",
+        "failed": "处理失败",
+    }
+    for outcome, desc in cases.items():
+        prompt = main.build_result_reply_prompt(outcome, "小明", "200", detail="细节")
+        assert desc in prompt
+        assert "小明" in prompt and "200" in prompt and "细节" in prompt
+        assert "100 字" in prompt
+        assert "所在群" not in prompt
+    # 未知 outcome 按 failed 处理；提供群名时带所在群行
+    assert "处理失败" in main.build_result_reply_prompt("weird", "小明", "200")
+    prompt = main.build_result_reply_prompt(
+        "approved", "小明", "200", group_name="测试群"
+    )
+    assert "所在群：测试群" in prompt
+
+
+def test_result_reply_approved_uses_persona_llm():
+    """同意：结果回复由 push LLM 按人设生成，人格按推送群 UMO 取。"""
+    plugin, _, observed = _reply_wired_plugin(llm_output='{"decision":"approve"}')
+    persona_calls, llm_calls = _wire_result_reply_llm(plugin, text="好嘞，放他进来了。")
+
+    _run_reply(plugin)
+
+    assert observed["process"] == [("r1", True, "")]
+    assert _sent_texts(plugin) == ["好嘞，放他进来了。"]
+    assert persona_calls == ["qq-main:GroupMessage:300"]
+    (prompt, system_prompt), *rest = llm_calls
+    assert rest == []
+    assert system_prompt == "人格 prompt"
+    assert "已同意" in prompt and "200" in prompt
+
+
+def test_result_reply_rejected_uses_persona_llm():
+    """拒绝：结果回复走 LLM 人格文案。"""
+    plugin, _, observed = _reply_wired_plugin(llm_output='{"decision":"reject"}')
+    _, llm_calls = _wire_result_reply_llm(plugin, text="行，那我拒绝了。")
+
+    _run_reply(plugin, _reply_raw(text="不要"))
+
+    assert observed["process"] == [("r1", False, "管理员群内拒绝")]
+    assert _sent_texts(plugin) == ["行，那我拒绝了。"]
+    ((prompt, _),) = llm_calls
+    assert "已拒绝" in prompt
+
+
+def test_result_reply_already_processed_uses_persona_llm():
+    """已处理：终态回复同样人格化。"""
+    plugin, _, observed = _reply_wired_plugin(request_status="approved")
+    _, llm_calls = _wire_result_reply_llm(plugin, text="这个早就处理过啦。")
+
+    _run_reply(plugin)
+
+    assert observed["process"] == []
+    assert _sent_texts(plugin) == ["这个早就处理过啦。"]
+    ((prompt, _),) = llm_calls
+    assert "已被处理" in prompt
+
+
+def test_result_reply_platform_failure_uses_persona_llm_with_detail():
+    """平台失败：LLM 文案，prompt 带失败细节。"""
+    plugin, _, _ = _reply_wired_plugin()
+    _, llm_calls = _wire_result_reply_llm(
+        plugin, text="哎呀，平台不放行，去管理页看看吧。"
+    )
+
+    class FailRuntime:
+        async def process_request(self, context, request_id, *, approve, reason=""):
+            return SimpleNamespace(
+                status="platform_error", platform_error="平台拒绝了操作"
+            )
+
+    plugin.join_review = FailRuntime()
+    _run_reply(plugin)
+
+    assert _sent_texts(plugin) == ["哎呀，平台不放行，去管理页看看吧。"]
+    ((prompt, _),) = llm_calls
+    assert "处理失败" in prompt
+    assert "平台拒绝了操作" in prompt
+
+
+@pytest.mark.parametrize("llm_result", ["", "   ", None])
+def test_result_reply_falls_back_to_fixed_text_when_llm_empty(llm_result):
+    """LLM 返回空：回退现有固定文案。"""
+    plugin, _, _ = _reply_wired_plugin()
+    _wire_result_reply_llm(plugin, text=llm_result)
+
+    _run_reply(plugin)
+
+    assert _sent_texts(plugin) == ["已同意 QQ 200 的入群申请。"]
+
+
+def test_result_reply_falls_back_when_llm_raises():
+    """LLM 调用抛异常：回退固定文案，不影响审批结果。"""
+    plugin, _, observed = _reply_wired_plugin()
+
+    async def persona(umo):
+        return "人格 prompt"
+
+    async def failing_llm(prompt, system_prompt="", contexts=None):
+        raise RuntimeError("llm down")
+
+    plugin._get_push_persona_prompt = persona
+    plugin._call_push_llm = failing_llm
+
+    _run_reply(plugin)
+
+    assert observed["process"] == [("r1", True, "")]
+    assert _sent_texts(plugin) == ["已同意 QQ 200 的入群申请。"]

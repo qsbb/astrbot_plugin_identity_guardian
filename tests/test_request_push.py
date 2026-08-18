@@ -176,12 +176,14 @@ def test_render_natural_uses_llm_caller_and_asks_for_opinion(tmp_path):
 
     assert message == "自然语言通知文案"
     assert len(prompts) == 1
-    assert "口令？" in prompts[0]
-    # natural 提示词要求 LLM 给出看法并引导引用回复审批
-    assert "看法" in prompts[0]
-    assert "引用" in prompts[0]
-    assert "同意" in prompts[0]
-    assert "管理页" in prompts[0]
+    prompt = prompts[0]
+    # natural 提示词只给全部事实 + 场景，让 AI 按人设自由措辞
+    for fact in ("小明", "200", "16", "口令？", "溪流", "申请群", "100"):
+        assert fact in prompt
+    # 唯一硬性要求：引导管理员引用本条消息回复同意或拒绝
+    assert "引用本条消息回复同意或拒绝" in prompt
+    # 不再限制字段罗列方式/措辞，也不强制旧版 200 字上限
+    assert "不超过 200 字" not in prompt
 
 
 @pytest.mark.parametrize("llm_result", ["", "   ", None])
@@ -343,6 +345,7 @@ def test_preview_formatted_marks_style(tmp_path):
     preview = run(render_push_preview(request, config, "申请群", None, make_decision()))
 
     assert preview["style"] == "formatted"
+    assert preview["opinion_source"] == "decision"
     assert "入群申请待审核" in preview["text"]
     assert "看法：自动审核建议通过" in preview["text"]
     assert PUSH_REPLY_HINT in preview["text"]
@@ -358,23 +361,32 @@ def test_preview_natural_success_marks_style(tmp_path):
 
     preview = run(render_push_preview(request, config, "申请群", llm_caller))
 
-    assert preview == {"style": "natural", "text": "自然文案"}
+    assert preview == {"style": "natural", "text": "自然文案", "opinion_source": "llm"}
 
 
 @pytest.mark.parametrize("llm_result", ["", "   ", None])
 def test_preview_natural_empty_falls_back_and_marks_style(tmp_path, llm_result):
+    """natural 回退格式化时 LLM 刚失败过：看法直接用自动审核结论，不再重试。"""
     _, store = make_service(tmp_path)
     request = add_request(store)
     config = make_config(store, push_style="natural")
+    calls: list[str] = []
 
     async def llm_caller(prompt: str):
+        calls.append(prompt)
         return llm_result
 
-    preview = run(render_push_preview(request, config, "申请群", llm_caller))
+    preview = run(
+        render_push_preview(request, config, "申请群", llm_caller, make_decision())
+    )
 
     assert preview["style"] == "natural_fallback_formatted"
+    assert preview["opinion_source"] == "decision"
     assert "入群申请待审核" in preview["text"]
+    assert "看法：自动审核建议通过" in preview["text"]
     assert PUSH_REPLY_HINT in preview["text"]
+    # natural 整段生成已含看法，回退后不重复调 LLM 生成看法
+    assert len(calls) == 1
 
 
 def test_preview_natural_exception_falls_back_and_marks_style(tmp_path):
@@ -388,6 +400,7 @@ def test_preview_natural_exception_falls_back_and_marks_style(tmp_path):
     preview = run(render_push_preview(request, config, "申请群", llm_caller))
 
     assert preview["style"] == "natural_fallback_formatted"
+    assert preview["opinion_source"] == "none"
     assert "答案：溪流" in preview["text"]
 
 
@@ -403,3 +416,101 @@ def test_preview_shares_render_path_with_render_message(tmp_path):
     )
 
     assert preview["text"] == message
+
+
+# ------------------------------------------------------------------
+# formatted 样式的 LLM 一句话看法
+# ------------------------------------------------------------------
+
+
+def test_preview_formatted_uses_llm_opinion(tmp_path):
+    """formatted + caller 可用：看法由 LLM 一句话生成，不再用 decision 行。"""
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_style="formatted")
+    prompts: list[str] = []
+
+    async def llm_caller(prompt: str) -> str:
+        prompts.append(prompt)
+        return "答案靠谱，正是群内暗号"
+
+    preview = run(
+        render_push_preview(request, config, "申请群", llm_caller, make_decision())
+    )
+
+    assert preview["style"] == "formatted"
+    assert preview["opinion_source"] == "llm"
+    assert "看法：答案靠谱，正是群内暗号" in preview["text"]
+    assert "自动审核" not in preview["text"]
+    assert PUSH_REPLY_HINT in preview["text"]
+    assert len(prompts) == 1
+    # 看法提示词带上问答与昵称、来源群，且要求纯文本短评
+    assert "口令？" in prompts[0] and "溪流" in prompts[0]
+    assert "小明" in prompts[0] and "申请群" in prompts[0]
+    assert "80" in prompts[0]
+
+
+def test_preview_formatted_llm_opinion_collapsed_to_one_line(tmp_path):
+    """LLM 返回多行/超长时折叠成一行并截断。"""
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_style="formatted")
+
+    async def llm_caller(prompt: str) -> str:
+        return "第一行\n第二行　" + "长" * 200
+
+    preview = run(render_push_preview(request, config, "申请群", llm_caller))
+
+    assert preview["opinion_source"] == "llm"
+    opinion_lines = [
+        line for line in preview["text"].splitlines() if line.startswith("看法：")
+    ]
+    assert len(opinion_lines) == 1
+    assert "第一行 第二行" in opinion_lines[0]
+    assert len(opinion_lines[0]) <= 3 + 120
+
+
+@pytest.mark.parametrize("llm_result", ["", "   ", None])
+def test_preview_formatted_llm_empty_falls_back_to_decision(tmp_path, llm_result):
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_style="formatted")
+
+    async def llm_caller(prompt: str):
+        return llm_result
+
+    preview = run(
+        render_push_preview(request, config, "申请群", llm_caller, make_decision())
+    )
+
+    assert preview["style"] == "formatted"
+    assert preview["opinion_source"] == "decision"
+    assert "看法：自动审核建议通过" in preview["text"]
+
+
+def test_preview_formatted_llm_exception_falls_back_to_decision(tmp_path):
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_style="formatted")
+
+    async def llm_caller(prompt: str):
+        raise RuntimeError("llm down")
+
+    preview = run(
+        render_push_preview(request, config, "申请群", llm_caller, make_decision())
+    )
+
+    assert preview["opinion_source"] == "decision"
+    assert "看法：自动审核建议通过" in preview["text"]
+
+
+def test_preview_formatted_without_caller_and_decision_marks_none(tmp_path):
+    """caller 与 decision 都没有：看法行如实标注未经过自动审核。"""
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_style="formatted")
+
+    preview = run(render_push_preview(request, config, "申请群", None, None))
+
+    assert preview["opinion_source"] == "none"
+    assert "看法：该申请未经过自动审核。" in preview["text"]

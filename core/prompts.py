@@ -69,17 +69,30 @@ ANSWER_JUDGE_PROMPT = """你是一个入群问答审核助手。判断用户的�
 - uncertain：无法判断（如知识不足、表述模糊）"""
 
 
-PUSH_MESSAGE_PROMPT = """请为以下待审入群申请写一段发到管理群的自然语言通知。
-要求：包含昵称、QQ、等级、入群问题、答案与来源群；根据问答质量给出你自己
-对该申请的看法（靠不靠谱），并询问管理员或群主是否同意；引导他们引用本条
-消息回复“同意”或“不同意”，或到入群审核管理页处理；语气自然简洁；
-不超过 200 字；只输出纯文本，不要使用 markdown，不要输出通知以外的内容。
+PUSH_MESSAGE_PROMPT = """你是本群的 bot。现在有一个新的入群申请，需要你以自己的人设在群里
+说一段话，向管理员/群主征求意见。措辞、结构、语气都由你自由发挥。
+与申请有关的全部事实如下：
+- 申请人昵称：{nickname}
+- 申请人 QQ：{user_id}
+- 等级：{level}
+- 入群问题：{question}
+- 申请人答案：{answer}
+- 来源群：{source_group_name}（{source_group_id}）
+唯一硬性要求：必须引导管理员「引用本条消息回复同意或拒绝」来表达决定
+（审批机制依赖引用定位到这条申请）；建议带上申请人 QQ 便于追溯。
+你可以自由评价这个申请靠不靠谱、要不要放他进来，除此之外不设限制。
+只输出纯文本，不要使用 markdown，不超过 300 字，
+不要输出与本次通知无关的内容。"""
+
+
+PUSH_OPINION_PROMPT = """请用一两句话评价以下待审入群申请：答案靠不靠谱、理由是什么，
+语气直接，像管理员随口一句判断。
+要求：只输出纯文本评价，不超过 80 字；不要 JSON，不要客套话，
+不要输出评价以外的内容。
 昵称：{nickname}
-QQ：{user_id}
-等级：{level}
-问题：{question}
+入群问题：{question}
 答案：{answer}
-来源群：{source_group_name}（{source_group_id}）"""
+来源群：{source_group_name}"""
 
 
 REPLY_JUDGE_PROMPT = """你是入群审核助手。一位管理员引用推送消息回复了以下内容，
@@ -89,6 +102,24 @@ REPLY_JUDGE_PROMPT = """你是入群审核助手。一位管理员引用推送�
 - reject：明确拒绝该申请入群（如“不同意”“拒绝”“别放进来”）
 - unclear：语义含糊、与审批无关或无法判断
 回复内容：{reply_text}"""
+
+
+_RESULT_OUTCOME_DESC: dict[str, str] = {
+    "approved": "已同意：该申请已批准，申请人可以进群了",
+    "rejected": "已拒绝：该申请已被拒绝",
+    "already_processed": "该申请此前已被处理（被其他管理员处理或已过期），本次没有任何变化",
+    "failed": "处理失败：本次操作没有生效，需要管理员到入群审核管理页处理",
+}
+
+RESULT_REPLY_PROMPT = """你是本群的 bot。刚才管理员在群里通过引用你的推送消息审批了一个
+入群申请，现在需要你在群里回一句简短的处理结果通知，口吻符合你的人设，
+像随口接话一样自然。
+处理结果：{outcome_desc}
+{group_line}申请人昵称：{nickname}
+申请人 QQ：{user_id}
+细节：{detail}
+只输出纯文本，不超过 100 字；说清楚处理结果；不要 JSON，不要 markdown，
+不要客套话，不要输出结果通知以外的内容。"""
 
 
 def _safe_name(event: Any) -> str:
@@ -180,6 +211,42 @@ def build_push_message_prompt(
     )
 
 
+def build_push_opinion_prompt(
+    question: str,
+    answer: str,
+    nickname: str,
+    source_group_name: str,
+) -> str:
+    """构建 formatted 推送文案的 LLM 一句话看法提示词。"""
+    return PUSH_OPINION_PROMPT.format(
+        nickname=str(nickname or "未知"),
+        question=str(question or "未知"),
+        answer=str(answer or "未知"),
+        source_group_name=str(source_group_name or "未知群名"),
+    )
+
+
 def build_reply_judge_prompt(reply_text: str) -> str:
     """构建引用回复审批的语义判断提示词。"""
     return REPLY_JUDGE_PROMPT.format(reply_text=str(reply_text or "")[:500])
+
+
+def build_result_reply_prompt(
+    outcome: str,
+    nickname: str,
+    user_id: str,
+    group_name: str = "",
+    detail: str = "",
+) -> str:
+    """构建审批结果回复的人格化措辞提示词（approved/rejected/already_processed/failed）。"""
+    outcome_desc = _RESULT_OUTCOME_DESC.get(
+        str(outcome or ""), _RESULT_OUTCOME_DESC["failed"]
+    )
+    group_name = str(group_name or "").strip()
+    return RESULT_REPLY_PROMPT.format(
+        outcome_desc=outcome_desc,
+        group_line=f"所在群：{group_name}\n" if group_name else "",
+        nickname=str(nickname or "未知"),
+        user_id=str(user_id or "未知"),
+        detail=str(detail or "无")[:200],
+    )

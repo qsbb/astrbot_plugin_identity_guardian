@@ -169,7 +169,7 @@ function normalizeGroup(item, configured = false) {
       : [],
     push_style: ["formatted", "natural"].includes(merged.push_style)
       ? merged.push_style
-      : "formatted",
+      : "natural",
     join_questions: Array.isArray(merged.join_questions)
       ? merged.join_questions
         .filter((item) => item && typeof item === "object")
@@ -345,6 +345,11 @@ const SIMULATE_PREVIEW_STYLE_BADGES = {
   formatted: ["格式化模板", ""],
   natural_fallback_formatted: ["自然文案生成失败，已回退格式化模板", "bad"],
 };
+const SIMULATE_OPINION_SOURCE_LABELS = {
+  llm: "看法：LLM 生成",
+  decision: "看法：自动审核结论",
+  none: "看法：无",
+};
 
 function renderSimulatePreview(data) {
   const preview = data?.push_preview && typeof data.push_preview === "object" ? data.push_preview : null;
@@ -356,6 +361,7 @@ function renderSimulatePreview(data) {
   }
   const [styleLabel, badgeClass] = SIMULATE_PREVIEW_STYLE_BADGES[preview.style] || [String(preview.style || ""), ""];
   const meta = [
+    SIMULATE_OPINION_SOURCE_LABELS[preview.opinion_source] || "看法：无",
     preview.persona_used ? "人格：已带入" : "人格：未配置",
     preview.provider ? `LLM：${preview.provider}` : "LLM：默认（主对话）",
     `近期群消息：${Number(preview.contexts_used) || 0} 条`,

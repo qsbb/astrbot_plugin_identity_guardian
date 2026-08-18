@@ -203,7 +203,7 @@ class GroupReviewConfig:
     include_answer: bool = True
     pinned: bool = False
     push_group_ids: tuple[str, ...] = ()
-    push_style: str = "formatted"
+    push_style: str = "natural"
     # 按群入群问答预设：{"question": str(可空=任意问题), "answers": tuple[str, ...]}
     join_questions: tuple[dict[str, Any], ...] = ()
     created_at: float = 0.0
@@ -232,7 +232,7 @@ class GroupReviewConfig:
         include_answer: Any = True,
         pinned: Any = False,
         push_group_ids: Iterable[Any] = (),
-        push_style: Any = "formatted",
+        push_style: Any = "natural",
         join_questions: Iterable[Any] = (),
         created_at: Any = 0.0,
         updated_at: Any = 0.0,
@@ -580,7 +580,7 @@ class JoinReviewStore:
         include_answer: Any = True,
         pinned: Any = False,
         push_group_ids: Iterable[Any] = (),
-        push_style: Any = "formatted",
+        push_style: Any = "natural",
         join_questions: Iterable[Any] = (),
     ) -> GroupReviewConfig:
         now = self._clock()

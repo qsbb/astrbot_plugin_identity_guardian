@@ -154,9 +154,13 @@ def test_page_simulate_result_renders_push_preview():
     for marker in (
         "renderSimulatePreview",
         "SIMULATE_PREVIEW_STYLE_BADGES",
+        "SIMULATE_OPINION_SOURCE_LABELS",
         "push_preview",
+        "opinion_source",
         "natural_fallback_formatted",
         "推送文案预览",
+        "看法：LLM 生成",
+        "看法：自动审核结论",
         "该申请不会触发推送，无文案预览",
         "仅预览，未发送",
     ):
