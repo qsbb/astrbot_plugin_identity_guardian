@@ -778,14 +778,22 @@ sys.modules["astrbot.api.message_components"].Plain = ReplyPlain
 class GroupMessageEvent:
     """最小群消息事件桩。"""
 
-    def __init__(self, platform_id="qq-main"):
+    def __init__(self, platform_id="qq-main", self_id="999"):
         self._platform_id = platform_id
+        self._self_id = self_id
+        self.stopped = False
 
     def get_platform_name(self):
         return "aiocqhttp"
 
     def get_platform_id(self):
         return self._platform_id
+
+    def get_self_id(self):
+        return self._self_id
+
+    def stop_event(self):
+        self.stopped = True
 
 
 class ReplyContext:
@@ -1053,7 +1061,40 @@ def test_on_event_dispatches_group_message_to_push_reply():
     assert _sent_texts(plugin) == ["已同意 QQ 200 的入群申请。"]
 
 
-# ----------------------------------------------------- 模拟申请推送文案预览
+def test_result_reply_consumes_event_and_stops_main_conversation():
+    """发送审批结果回复前 stop_event：引用回复不再进入主对话 LLM。"""
+    plugin, _, _ = _reply_wired_plugin(llm_output='{"decision":"approve"}')
+    event = GroupMessageEvent()
+
+    _run_reply(plugin, event=event)
+
+    assert event.stopped is True
+    assert _sent_texts(plugin) == ["已同意 QQ 200 的入群申请。"]
+
+
+def test_unclear_judgement_does_not_consume_event():
+    """含糊回复静默放行：不消费事件，也不发送结果回复。"""
+    plugin, _, observed = _reply_wired_plugin(llm_output='{"decision":"unclear"}')
+    event = GroupMessageEvent()
+
+    _run_reply(plugin, event=event)
+
+    assert observed["llm"]  # 确实走了 LLM 判断
+    assert event.stopped is False
+    assert plugin.context.sent == []
+
+
+def test_bot_own_reply_echo_is_ignored():
+    """bot 自己引用推送消息的回显直接忽略，不进入审批链路。"""
+    plugin, _, observed = _reply_wired_plugin()
+    event = GroupMessageEvent(self_id="999")
+
+    _run_reply(plugin, _reply_raw(user_id="999"), event)
+
+    assert observed["find"] == []
+    assert observed["llm"] == []
+    assert plugin.context.sent == []
+    assert event.stopped is False
 
 
 def _preview_wired_plugin():

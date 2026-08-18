@@ -12,7 +12,7 @@ def read_page(name: str) -> str:
 def test_page_loads_bridge_before_application_script():
     html = read_page("index.html")
     bridge = '<script src="/api/plugin/page/bridge-sdk.js"></script>'
-    app = '<script src="./app.js"></script>'
+    app = '<script src="./app.js?v=0.4.2"></script>'
     assert bridge in html
     assert app in html
     assert html.index(bridge) < html.index(app)

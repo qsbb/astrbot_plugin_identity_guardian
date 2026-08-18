@@ -37,6 +37,11 @@ _DECISION_OPINION: dict[str, str] = {
 }
 
 
+def resolve_push_targets(request: JoinRequest, config: GroupReviewConfig) -> list[str]:
+    """解析申请的实际推送目标群：push_group_ids 非空时按配置，否则回退申请所属群。"""
+    return list(config.push_group_ids) or [request.group_id]
+
+
 def build_opinion_line(decision: Any) -> str:
     """把自动审核 decision 渲染成一行「看法」；None 表示未经过自动审核。"""
     if decision is None:
@@ -171,12 +176,13 @@ class RequestPushService:
     ) -> tuple[list[str], list[str], list[str]]:
         """逐群推送申请文案，返回 (成功群列表, 已推过跳过列表, 失败原因列表)。
 
-        目标群取自按群配置 push_group_ids；为空时回退到申请所属群本身。
+        目标群取自按群配置 push_group_ids；为空时回退到申请所属群本身
+        （与 ``resolve_push_targets`` 同一解析，供通知去重共用）。
         每个目标群先 claim 再发送，单个群失败不中断其余群；
         失败释放占位，事件重复投递时可重试。发送成功后记录推送消息映射
         （push_refs），供群内引用回复审批定位申请。
         """
-        target_group_ids = list(config.push_group_ids) or [request.group_id]
+        target_group_ids = resolve_push_targets(request, config)
 
         bot = get_aiocqhttp_bot(context, request.platform_id)
         if bot is None:
@@ -239,4 +245,5 @@ __all__ = [
     "RequestPushService",
     "build_opinion_line",
     "render_push_preview",
+    "resolve_push_targets",
 ]

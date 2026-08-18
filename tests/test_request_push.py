@@ -14,6 +14,7 @@ from core.request_push import (
     RequestPushService,
     build_opinion_line,
     render_push_preview,
+    resolve_push_targets,
 )
 
 
@@ -514,3 +515,24 @@ def test_preview_formatted_without_caller_and_decision_marks_none(tmp_path):
 
     assert preview["opinion_source"] == "none"
     assert "看法：该申请未经过自动审核。" in preview["text"]
+
+
+# ------------------------------------------------------------------
+# resolve_push_targets
+# ------------------------------------------------------------------
+
+
+def test_resolve_push_targets_falls_back_to_source_group(tmp_path):
+    """push_group_ids 留空：回退到申请所属群本身。"""
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_group_ids=[])
+    assert resolve_push_targets(request, config) == ["100"]
+
+
+def test_resolve_push_targets_uses_configured_groups(tmp_path):
+    """push_group_ids 非空：按配置顺序返回。"""
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_group_ids=["300", "301"])
+    assert resolve_push_targets(request, config) == ["300", "301"]

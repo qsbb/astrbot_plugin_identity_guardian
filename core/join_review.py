@@ -19,6 +19,7 @@ from .join_review_store import (
 )
 from .models import JoinDecision, JoinVerdict
 from .onebot import OneBotClient
+from .request_push import resolve_push_targets
 
 MAX_EVENT_TEXT = 2048
 MAX_NICKNAME = 128
@@ -210,7 +211,13 @@ class JoinReviewRuntime:
                 )
 
         request = await self._store_request(parsed)
-        notification = await self.notification.notify(event.bot, request, config)
+        # 通知与推送按群去重：推送目标群不再重复发旧模板通知。
+        notification = await self.notification.notify(
+            event.bot,
+            request,
+            config,
+            exclude_group_ids=resolve_push_targets(request, config),
+        )
         return JoinReviewResult(
             "pending_review",
             decision=audit_result.decision if audit_result else None,

@@ -141,7 +141,8 @@ def test_auto_only_leaves_unapproved_request_on_platform(tmp_path):
 
 def test_send_only_skips_auto_audit_and_queues(tmp_path):
     runtime, store, audit, event, bot = make_runtime(tmp_path)
-    configure(store, auto=False, send=True)
+    # 推送群与通知目标错开，避免按群去重吃掉本条通知（去重由专项用例覆盖）。
+    configure(store, auto=False, send=True, push_group_ids=["400"])
     result = run(runtime.handle_event(event, raw_request()))
     assert result.outcome == "pending_review"
     assert audit.calls == 0
@@ -209,7 +210,8 @@ def test_every_not_actually_approved_result_enters_manual_review(
     runtime, store, audit, event, bot = make_runtime(
         tmp_path / case, audit_result_value
     )
-    configure(store, auto=True, send=True)
+    # 推送群与通知目标错开，专注验证审核流转而非通知去重。
+    configure(store, auto=True, send=True, push_group_ids=["400"])
 
     result = run(runtime.handle_event(event, raw_request()))
 
@@ -247,6 +249,58 @@ def test_notification_variants_whitelist_and_idempotency(tmp_path):
     assert "来源群：申请群（100）" in messages[1]["message"]
     assert "答案：" not in messages[0]["message"]
     assert {item["group_id"] for item in messages} == {100, 300}
+
+
+def test_notify_excludes_push_targets_without_claiming(tmp_path):
+    """exclude_group_ids 中的群直接跳过：不发送也不占位，之后仍可正常通知。"""
+    runtime, store, _, event, bot = make_runtime(tmp_path)
+    config = configure(
+        store,
+        auto=False,
+        send=True,
+        notify_target="both",
+        specified_group_ids=[300],
+    )
+    request = run(runtime._store_request(parse_join_request(event, raw_request())))
+    first = run(
+        runtime.notification.notify(bot, request, config, exclude_group_ids=["300"])
+    )
+    assert first.sent == ("100",)
+    assert first.skipped == ()
+    sent_groups = {p["group_id"] for a, p in bot.calls if a == "send_group_msg"}
+    assert sent_groups == {100}
+    # 被排除的群未 claim，再次不带排除调用仍会发送。
+    second = run(runtime.notification.notify(bot, request, config))
+    assert second.sent == ("300",)
+    assert second.skipped == ("100",)
+
+
+def test_handle_event_notification_dedupes_with_push_targets(tmp_path):
+    """推送目标与通知目标重叠时同一群只收一条：推送群不再收旧模板通知。"""
+    runtime, store, _, event, bot = make_runtime(tmp_path)
+    # push_group_ids 留空时推送回退到申请所属群 100，与 target_group 通知重叠。
+    configure(store, auto=False, send=True, push_group_ids=[])
+    result = run(runtime.handle_event(event, raw_request()))
+    assert result.outcome == "pending_review"
+    assert result.notification is not None and result.notification.sent == ()
+    assert not any(a == "send_group_msg" for a, _ in bot.calls)
+
+
+def test_handle_event_notification_unchanged_without_push_overlap(tmp_path):
+    """推送群与通知目标无重叠时，旧模板通知行为不变。"""
+    runtime, store, _, event, bot = make_runtime(tmp_path)
+    configure(
+        store,
+        auto=False,
+        send=True,
+        notify_target="both",
+        specified_group_ids=[300],
+        push_group_ids=["400"],
+    )
+    result = run(runtime.handle_event(event, raw_request()))
+    assert result.outcome == "pending_review"
+    assert result.notification is not None
+    assert result.notification.sent == ("100", "300")
 
 
 def test_notification_failure_keeps_pending_and_can_retry(tmp_path):

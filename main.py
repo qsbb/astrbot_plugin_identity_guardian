@@ -1511,6 +1511,12 @@ class IdentityGuardianPlugin(Star):
                 platform_id = ""
             if not (platform_id and group_id and replier_id):
                 return
+            # bot 自己引用推送消息产生的回显直接忽略，不进入审批链路。
+            try:
+                if replier_id == str(event.get_self_id() or ""):
+                    return
+            except Exception:
+                pass
             try:
                 request = await self.join_review_store.find_request_by_push_ref(
                     platform_id, group_id, quoted_id
@@ -1528,11 +1534,19 @@ class IdentityGuardianPlugin(Star):
                 if role not in {"owner", "admin"}:
                     return
             umo = f"{platform_id}:GroupMessage:{group_id}"
-            if request.status not in ACTIONABLE_STATUSES:
+
+            async def reply_result(
+                outcome: str, *, detail: str = "", fallback: str
+            ) -> None:
+                # 消费这条引用回复：阻止它继续进入主对话 LLM。
+                event.stop_event()
                 await self._send_result_reply(
-                    umo,
+                    umo, outcome, request, detail=detail, fallback=fallback
+                )
+
+            if request.status not in ACTIONABLE_STATUSES:
+                await reply_result(
                     "already_processed",
-                    request,
                     fallback="该申请已被处理。",
                 )
                 return
@@ -1552,18 +1566,14 @@ class IdentityGuardianPlugin(Star):
                     reason="" if approve else "管理员群内拒绝",
                 )
             except RequestNotActionable:
-                await self._send_result_reply(
-                    umo,
+                await reply_result(
                     "already_processed",
-                    request,
                     fallback="该申请已被其他管理员处理或已过期。",
                 )
                 return
             except GuardBlockedError:
-                await self._send_result_reply(
-                    umo,
+                await reply_result(
                     "failed",
-                    request,
                     detail="插件已紧急停止或已熔断",
                     fallback="处理失败：插件已紧急停止或已熔断，请到管理页处理。",
                 )
@@ -1572,28 +1582,22 @@ class IdentityGuardianPlugin(Star):
                 self.logger.warning(
                     "%s push reply process error: %s", LOG_PREFIX, type(exc).__name__
                 )
-                await self._send_result_reply(
-                    umo,
+                await reply_result(
                     "failed",
-                    request,
                     detail="内部错误",
                     fallback="处理失败：内部错误，请到管理页处理。",
                 )
                 return
             if updated.status in ("approved", "rejected"):
                 verb = "已同意" if updated.status == "approved" else "已拒绝"
-                await self._send_result_reply(
-                    umo,
+                await reply_result(
                     updated.status,
-                    request,
                     fallback=f"{verb} QQ {request.user_id} 的入群申请。",
                 )
             else:
                 reason = updated.platform_error or "平台操作失败"
-                await self._send_result_reply(
-                    umo,
+                await reply_result(
                     "failed",
-                    request,
                     detail=reason,
                     fallback=f"处理失败：{reason}，请到管理页处理。",
                 )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -60,13 +61,16 @@ class JoinNotificationService:
         bot: Any,
         request: JoinRequest,
         config: GroupReviewConfig,
+        exclude_group_ids: Iterable[str] = (),
     ) -> NotificationResult:
+        """发送待审通知；``exclude_group_ids`` 中的群不发送（用于与推送去重）。"""
         if (
             request.platform_id != config.platform_id
             or request.group_id != config.group_id
         ):
             raise ValueError("request_config_scope_mismatch")
 
+        excluded = {str(g) for g in exclude_group_ids}
         source_info = await self.onebot.get_group_info_for_bot(
             bot, int(request.group_id), no_cache=False
         )
@@ -78,6 +82,8 @@ class JoinNotificationService:
         skipped: list[str] = []
         failed: list[str] = []
         for target_group_id, show_source in self._targets(config):
+            if target_group_id in excluded:
+                continue
             target_key = f"group:{target_group_id}"
             claim = await self.store.claim_notification(request.request_id, target_key)
             if claim is None:
