@@ -1164,3 +1164,10 @@ input[type="checkbox"] {
   font-family: inherit;
   font-size: 14px;
 }
+
+.simulate-reply-preview {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line-soft);
+}

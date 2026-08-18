@@ -351,10 +351,27 @@ const SIMULATE_OPINION_SOURCE_LABELS = {
   none: "看法：无",
 };
 
+function renderSimulateResultReplyPreview(data) {
+  const replies = data?.result_reply_preview && typeof data.result_reply_preview === "object" ? data.result_reply_preview : null;
+  if (!replies) {
+    return "";
+  }
+  const row = (label, item) => {
+    const entry = item && typeof item === "object" ? item : {};
+    const badge = entry.fallback ? ' <span class="status-badge">模板</span>' : "";
+    return `<div class="simulate-stage"><span class="simulate-detail"><strong>${label}</strong>${badge} ${escapeHtml(entry.text || "")}</span></div>`;
+  };
+  return `<div class="simulate-reply-preview">
+      <span class="simulate-detail"><strong>结果回复预览</strong>（管理员引用回复后 bot 的回应，仅预览，未发送）</span>
+      ${row("若同意：", replies.approved)}
+      ${row("若拒绝：", replies.rejected)}
+    </div>`;
+}
+
 function renderSimulatePreview(data) {
   const preview = data?.push_preview && typeof data.push_preview === "object" ? data.push_preview : null;
   if (data?.would !== "pending_review") {
-    return `<div class="simulate-preview"><span class="simulate-detail">该申请不会触发推送，无文案预览。</span></div>`;
+    return `<div class="simulate-preview"><span class="simulate-detail">该申请不会触发推送，无推送与结果回复预览。</span></div>`;
   }
   if (!preview) {
     return `<div class="simulate-preview"><span class="simulate-detail">推送文案预览生成失败，请查看插件日志。</span></div>`;
@@ -370,7 +387,8 @@ function renderSimulatePreview(data) {
       <span class="status-badge ${badgeClass}">推送文案预览 · ${escapeHtml(styleLabel)}</span>
       <pre class="simulate-preview-text">${escapeHtml(preview.text || "")}</pre>
       <span class="simulate-detail">${escapeHtml(meta.join(" · "))}（仅预览，未发送）</span>
-    </div>`;
+    </div>
+    ${renderSimulateResultReplyPreview(data)}`;
 }
 
 function renderSimulateResult(data) {

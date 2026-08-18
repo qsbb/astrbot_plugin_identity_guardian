@@ -621,3 +621,93 @@ def test_simulate_preview_hook_failure_keeps_diagnosis(tmp_path, monkeypatch):
     assert result["success"] is True
     assert result["data"]["would"] == "pending_review"
     assert result["data"]["push_preview"] is None
+
+
+def test_simulate_pending_review_includes_result_reply_preview(tmp_path, monkeypatch):
+    """转人工待审时附结果回复预览：approved/rejected 两结局，钩子收到群标识。"""
+    api, store, _, bot = make_api(tmp_path)
+    _wire_simulate_audit(api)
+    run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            auto_audit_enabled=True,
+            review_send_enabled=True,
+        )
+    )
+    hook_calls = []
+
+    async def hook(**kwargs):
+        hook_calls.append(kwargs)
+        return {
+            "approved": {"text": "好，放他进来。", "fallback": False},
+            "rejected": {"text": "行，那我拒绝了。", "fallback": False},
+        }
+
+    api.result_reply_preview = hook
+    monkeypatch.setattr(api_module, "request", FakeRequest(_simulate_payload()))
+    result = response_data(run(api.simulate()))
+
+    data = result["data"]
+    assert data["would"] == "pending_review"
+    assert data["result_reply_preview"] == {
+        "approved": {"text": "好，放他进来。", "fallback": False},
+        "rejected": {"text": "行，那我拒绝了。", "fallback": False},
+    }
+    (call,) = hook_calls
+    assert call["platform_id"] == "qq-main" and call["group_id"] == "100"
+    # 零副作用：无待审记录、无平台写操作
+    assert run(store.list_requests()) == []
+    assert not any(
+        action in ("set_group_add_request", "send_group_msg") for action, _ in bot.calls
+    )
+
+
+def test_simulate_non_pending_review_skips_result_reply_preview(tmp_path, monkeypatch):
+    """非 pending_review 不生成结果回复预览：钩子不被调用，字段为 None。"""
+    api, store, _, _ = make_api(tmp_path)
+    _wire_simulate_audit(api)
+    run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            auto_audit_enabled=True,
+            review_send_enabled=False,
+            join_questions=[{"question": "口令？", "answers": ["溪流"]}],
+        )
+    )
+
+    async def hook(**kwargs):
+        raise AssertionError("非 pending_review 不应生成结果回复预览")
+
+    api.result_reply_preview = hook
+    monkeypatch.setattr(api_module, "request", FakeRequest(_simulate_payload()))
+    result = response_data(run(api.simulate()))
+
+    assert result["data"]["would"] == "approve"
+    assert result["data"]["result_reply_preview"] is None
+
+
+def test_simulate_result_reply_hook_failure_keeps_diagnosis(tmp_path, monkeypatch):
+    """结果回复预览钩子抛异常不影响诊断主结果：字段为 None。"""
+    api, store, _, _ = make_api(tmp_path)
+    _wire_simulate_audit(api)
+    run(
+        store.upsert_group_config(
+            platform_id="qq-main",
+            group_id="100",
+            auto_audit_enabled=True,
+            review_send_enabled=True,
+        )
+    )
+
+    async def hook(**kwargs):
+        raise RuntimeError("result reply pipeline down")
+
+    api.result_reply_preview = hook
+    monkeypatch.setattr(api_module, "request", FakeRequest(_simulate_payload()))
+    result = response_data(run(api.simulate()))
+
+    assert result["success"] is True
+    assert result["data"]["would"] == "pending_review"
+    assert result["data"]["result_reply_preview"] is None

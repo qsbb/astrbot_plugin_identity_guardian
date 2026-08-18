@@ -46,6 +46,7 @@ class JoinReviewPageAPI:
         logger: Any,
         ensure_llm: Any = None,
         push_preview: Any = None,
+        result_reply_preview: Any = None,
     ) -> None:
         self.context = context
         self.config = config
@@ -56,6 +57,8 @@ class JoinReviewPageAPI:
         self.ensure_llm = ensure_llm
         # 模拟申请的推送文案预览钩子（main 注入，带人格/近期群消息上下文）。
         self.push_preview = push_preview
+        # 模拟申请的审批结果回复预览钩子（main 注入，与生产同一渲染链路）。
+        self.result_reply_preview = result_reply_preview
 
     def register(self) -> bool:
         register = getattr(self.context, "register_web_api", None)
@@ -346,8 +349,9 @@ class JoinReviewPageAPI:
 
         零副作用：不触平台批准/拒绝 API、不写待审记录、不发通知/推送、
         不写审计日志。``would`` 仅按该群当前开关说明实际事件会发生什么；
-        ``would == "pending_review"`` 时附 ``push_preview`` 推送文案预览
-        （只生成不发送），预览生成失败时为 None。
+        ``would == "pending_review"`` 时附 ``push_preview`` 推送文案预览与
+        ``result_reply_preview`` 审批结果回复预览（都只生成不发送），
+        预览生成失败时对应字段为 None。
         """
         payload = await self._payload()
         if payload is None:
@@ -412,28 +416,42 @@ class JoinReviewPageAPI:
             else ("global" if getattr(self.config, "join_questions", []) else "none")
         )
         preview = None
-        if would == "pending_review" and callable(self.push_preview):
+        result_reply = None
+        if would == "pending_review":
             # 仅转人工待审会触发推送，此时给出推送文案预览（零副作用）。
             source = self._discovery_map(discovered).get(
                 (str(payload["platform_id"]).strip(), str(payload["group_id"]).strip())
             )
-            try:
-                preview = await self.push_preview(
-                    platform_id=str(payload["platform_id"]).strip(),
-                    group_id=str(payload["group_id"]).strip(),
-                    question=question,
-                    answer=answer,
-                    config=config,
-                    decision=decision,
-                    source_group_name=(
-                        source.group_name if source is not None else "未知群名"
-                    ),
-                )
-            except Exception as exc:
-                self.logger.warning(
-                    "[idg] join-review push preview failed: %s", type(exc).__name__
-                )
-                preview = None
+            if callable(self.push_preview):
+                try:
+                    preview = await self.push_preview(
+                        platform_id=str(payload["platform_id"]).strip(),
+                        group_id=str(payload["group_id"]).strip(),
+                        question=question,
+                        answer=answer,
+                        config=config,
+                        decision=decision,
+                        source_group_name=(
+                            source.group_name if source is not None else "未知群名"
+                        ),
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        "[idg] join-review push preview failed: %s", type(exc).__name__
+                    )
+                    preview = None
+            if callable(self.result_reply_preview):
+                try:
+                    result_reply = await self.result_reply_preview(
+                        platform_id=str(payload["platform_id"]).strip(),
+                        group_id=str(payload["group_id"]).strip(),
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        "[idg] join-review result reply preview failed: %s",
+                        type(exc).__name__,
+                    )
+                    result_reply = None
         return self._response(
             {
                 "data": {
@@ -442,6 +460,7 @@ class JoinReviewPageAPI:
                     "would": would,
                     "presets_source": presets_source,
                     "push_preview": preview,
+                    "result_reply_preview": result_reply,
                 }
             }
         )

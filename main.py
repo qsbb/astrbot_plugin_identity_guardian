@@ -211,6 +211,7 @@ class IdentityGuardianPlugin(Star):
             logger=self.logger,
             ensure_llm=self._ensure_llm_caller,
             push_preview=self._simulate_push_preview,
+            result_reply_preview=self._simulate_result_reply_preview,
         )
         self.join_review_page_available = self.join_review_page_api.register()
 
@@ -794,6 +795,36 @@ class IdentityGuardianPlugin(Star):
         preview["provider"] = str(getattr(self.config, "push_llm_provider", "") or "")
         preview["contexts_used"] = len(contexts)
         return preview
+
+    async def _simulate_result_reply_preview(
+        self,
+        *,
+        platform_id: str,
+        group_id: str,
+    ) -> dict[str, Any]:
+        """Page「模拟申请」的审批结果回复预览（零副作用，只生成不发送）。
+
+        与生产结果回复共用 ``_render_result_reply``：人格按目标群会话取、
+        LLM 走 push_llm_provider；申请人昵称/QQ 用与推送预览一致的占位值。
+        生成 approved/rejected 两种结局，LLM 空/失败时回退固定文案并标注。
+        """
+        umo = f"{platform_id}:GroupMessage:{group_id}"
+        return {
+            "approved": await self._render_result_reply(
+                "approved",
+                umo,
+                "模拟用户",
+                "（模拟）",
+                fallback="已同意 QQ （模拟） 的入群申请。",
+            ),
+            "rejected": await self._render_result_reply(
+                "rejected",
+                umo,
+                "模拟用户",
+                "（模拟）",
+                fallback="已拒绝 QQ （模拟） 的入群申请。",
+            ),
+        }
 
     def _ensure_llm_caller(self) -> None:
         """延迟绑定 LLM caller。"""
@@ -1533,6 +1564,41 @@ class IdentityGuardianPlugin(Star):
         except Exception as exc:
             self.logger.debug("%s push reply send failed: %s", LOG_PREFIX, exc)
 
+    async def _render_result_reply(
+        self,
+        outcome: str,
+        umo: str,
+        nickname: str,
+        user_id: str,
+        detail: str = "",
+        fallback: str = "",
+    ) -> dict[str, Any]:
+        """生成审批结果回复文案，返回 ``{"text", "fallback"}``；不发送。
+
+        与生产结果回复同一条链路：人格按目标群 UMO 取，LLM 调用走
+        push_llm_provider；任何一步失败或 LLM 返回空都回退 ``fallback``
+        固定文案并标注 ``fallback=True``。生产发送（``_send_result_reply``）
+        与 Page 模拟预览共用本方法，保证文案不漂移。
+        """
+        text = ""
+        try:
+            persona_prompt = await self._get_push_persona_prompt(umo)
+            result = await self._call_push_llm(
+                build_result_reply_prompt(
+                    outcome,
+                    nickname=str(nickname or ""),
+                    user_id=str(user_id or ""),
+                    detail=detail,
+                ),
+                persona_prompt,
+            )
+            text = "" if result is None else str(result).strip()
+        except Exception as exc:
+            self.logger.debug("%s result reply render failed: %s", LOG_PREFIX, exc)
+        if text:
+            return {"text": text, "fallback": False}
+        return {"text": fallback, "fallback": True}
+
     async def _send_result_reply(
         self,
         umo: str,
@@ -1548,22 +1614,15 @@ class IdentityGuardianPlugin(Star):
         走 push_llm_provider。任何一步失败都回退 ``fallback`` 固定文案，
         保证结果一定有回复。
         """
-        text = ""
-        try:
-            persona_prompt = await self._get_push_persona_prompt(umo)
-            result = await self._call_push_llm(
-                build_result_reply_prompt(
-                    outcome,
-                    nickname=str(getattr(request, "nickname", "") or ""),
-                    user_id=str(getattr(request, "user_id", "") or ""),
-                    detail=detail,
-                ),
-                persona_prompt,
-            )
-            text = "" if result is None else str(result).strip()
-        except Exception as exc:
-            self.logger.debug("%s result reply render failed: %s", LOG_PREFIX, exc)
-        await self._send_group_reply(umo, text or fallback)
+        rendered = await self._render_result_reply(
+            outcome,
+            umo,
+            nickname=str(getattr(request, "nickname", "") or ""),
+            user_id=str(getattr(request, "user_id", "") or ""),
+            detail=detail,
+            fallback=fallback,
+        )
+        await self._send_group_reply(umo, rendered["text"])
 
     async def _execute_action(
         self,

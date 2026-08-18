@@ -161,13 +161,29 @@ def test_page_simulate_result_renders_push_preview():
         "推送文案预览",
         "看法：LLM 生成",
         "看法：自动审核结论",
-        "该申请不会触发推送，无文案预览",
+        "该申请不会触发推送，无推送与结果回复预览",
         "仅预览，未发送",
     ):
         assert marker in js
     assert ".simulate-preview" in css
     assert ".simulate-preview-text" in css
     assert "pre-wrap" in css
+
+
+def test_page_simulate_result_renders_result_reply_preview():
+    """模拟结果含审批结果回复预览块：若同意/若拒绝两行，回退带模板标注。"""
+    js = read_page("app.js")
+    css = read_page("style.css")
+    for marker in (
+        "renderSimulateResultReplyPreview",
+        "result_reply_preview",
+        "结果回复预览",
+        "若同意：",
+        "若拒绝：",
+        "模板",
+    ):
+        assert marker in js
+    assert ".simulate-reply-preview" in css
 
 
 def test_mobile_layout_uses_non_overlapping_labeled_rows():

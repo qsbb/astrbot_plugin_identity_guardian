@@ -1464,3 +1464,117 @@ def test_result_reply_falls_back_when_llm_raises():
 
     assert observed["process"] == [("r1", True, "")]
     assert _sent_texts(plugin) == ["已同意 QQ 200 的入群申请。"]
+
+
+# ----------------------------------------------------- 结果回复预览（_render_result_reply 抽取）
+
+
+def test_render_result_reply_returns_llm_text_without_fallback():
+    """_render_result_reply：人格/caller 透传，LLM 非空时 fallback=False 不发送。"""
+    plugin = _preview_wired_plugin()
+    persona_calls, llm_calls = _wire_result_reply_llm(plugin, text="好，放他进来了。")
+
+    rendered = asyncio.run(
+        plugin._render_result_reply(
+            "approved",
+            "qq-main:GroupMessage:300",
+            "模拟用户",
+            "（模拟）",
+            fallback="已同意 QQ （模拟） 的入群申请。",
+        )
+    )
+
+    assert rendered == {"text": "好，放他进来了。", "fallback": False}
+    assert persona_calls == ["qq-main:GroupMessage:300"]
+    ((prompt, system_prompt),) = llm_calls
+    assert system_prompt == "人格 prompt"
+    assert "已同意" in prompt
+    assert "模拟用户" in prompt and "（模拟）" in prompt
+
+
+def test_render_result_reply_marks_fallback_when_llm_empty():
+    """LLM 返回空：回退固定文案并标注 fallback=True。"""
+    plugin = _preview_wired_plugin()
+    _wire_result_reply_llm(plugin, text="")
+
+    rendered = asyncio.run(
+        plugin._render_result_reply(
+            "rejected",
+            "qq-main:GroupMessage:300",
+            "模拟用户",
+            "（模拟）",
+            detail="",
+            fallback="已拒绝 QQ （模拟） 的入群申请。",
+        )
+    )
+
+    assert rendered == {"text": "已拒绝 QQ （模拟） 的入群申请。", "fallback": True}
+
+
+def test_send_result_reply_reuses_render_path():
+    """_send_result_reply 复用 _render_result_reply：同一实现不漂移。"""
+    plugin, _, _ = _reply_wired_plugin()
+    render_calls = []
+
+    async def spy_render(outcome, umo, nickname, user_id, detail="", fallback=""):
+        render_calls.append((outcome, umo, nickname, user_id, detail, fallback))
+        return {"text": "人格化结果文案", "fallback": False}
+
+    plugin._render_result_reply = spy_render
+    request = SimpleNamespace(nickname="小明", user_id="200")
+
+    asyncio.run(
+        plugin._send_result_reply(
+            "qq-main:GroupMessage:300",
+            "approved",
+            request,
+            detail="",
+            fallback="已同意 QQ 200 的入群申请。",
+        )
+    )
+
+    assert render_calls == [
+        (
+            "approved",
+            "qq-main:GroupMessage:300",
+            "小明",
+            "200",
+            "",
+            "已同意 QQ 200 的入群申请。",
+        )
+    ]
+    assert _sent_texts(plugin) == ["人格化结果文案"]
+
+
+def test_simulate_result_reply_preview_returns_two_outcomes():
+    """模拟预览：approved/rejected 两结局，占位申请人与目标群人格。"""
+    plugin = _preview_wired_plugin()
+    persona_calls, llm_calls = _wire_result_reply_llm(plugin, text="人设结果回复")
+
+    preview = asyncio.run(
+        plugin._simulate_result_reply_preview(platform_id="qq-main", group_id="100")
+    )
+
+    assert set(preview) == {"approved", "rejected"}
+    assert preview["approved"] == {"text": "人设结果回复", "fallback": False}
+    assert preview["rejected"] == {"text": "人设结果回复", "fallback": False}
+    assert persona_calls == ["qq-main:GroupMessage:100"] * 2
+    prompts = [prompt for prompt, _ in llm_calls]
+    assert len(prompts) == 2
+    assert "已同意" in prompts[0] and "已拒绝" in prompts[1]
+    assert all("模拟用户" in prompt for prompt in prompts)
+
+
+def test_simulate_result_reply_preview_marks_fallback_per_outcome():
+    """LLM 空：两结局各自回退固定文案并标注。"""
+    plugin = _preview_wired_plugin()
+    _wire_result_reply_llm(plugin, text="")
+
+    preview = asyncio.run(
+        plugin._simulate_result_reply_preview(platform_id="qq-main", group_id="100")
+    )
+
+    assert preview["approved"]["fallback"] is True
+    assert preview["approved"]["text"] == "已同意 QQ （模拟） 的入群申请。"
+    assert preview["rejected"]["fallback"] is True
+    assert preview["rejected"]["text"] == "已拒绝 QQ （模拟） 的入群申请。"
