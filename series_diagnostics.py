@@ -27,7 +27,6 @@ _ACTOR_ID = re.compile(
 )
 _URL_QUERY = re.compile(r"(https?://[^\s?]+)\?[^\s]+", re.IGNORECASE)
 _URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
-_PATH = re.compile(r"(?:[A-Za-z]:\\|/)[^\s]+")
 _EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _OPAQUE_VALUE = re.compile(
     r"(?<![\w])(?=[A-Za-z0-9_-]{20,}(?![\w]))"
@@ -54,7 +53,6 @@ def _safe_text(value: Any, *, limit: int = 320) -> str:
     text = _ACTOR_ID.sub("<已隐藏标识>", text)
     text = _URL_QUERY.sub(r"\1?[已隐藏参数]", text)
     text = _URL.sub("<已隐藏网址>", text)
-    text = _PATH.sub("<已隐藏路径>", text)
     text = _LONG_NUMBER.sub("<已隐藏标识>", text)
     return text if len(text) <= limit else text[: max(1, limit - 1)] + "…"
 
