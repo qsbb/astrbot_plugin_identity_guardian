@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## 0.5.0 - 2026-08-19
+
+### 变更
+
+- 发布入群审核页可访问性与 Bridge 恢复优化。
+
 ### 修复
 
 - 申请推送与旧版待审通知按群去重：入群申请进入人工待审时，事件驱动推送覆盖的群不再重复收到旧模板通知（`JoinNotificationService.notify` 新增 `exclude_group_ids`，目标解析抽为共享的 `resolve_push_targets`），同一群只收一条消息。
