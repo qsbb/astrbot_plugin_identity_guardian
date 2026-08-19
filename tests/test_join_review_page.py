@@ -109,6 +109,19 @@ def test_page_group_settings_popover():
     assert ".group-link" in css
 
 
+def test_page_popover_has_focus_and_ready_failure_feedback():
+    html = read_page("index.html")
+    js = read_page("app.js")
+    css = read_page("style.css")
+    assert 'role="dialog" aria-labelledby="group-popover-title"' in html
+    assert 'aria-haspopup="dialog"' in js
+    assert 'anchor?.setAttribute("aria-expanded", "true")' in js
+    assert 'trigger.focus({ preventScroll: true })' in js
+    assert "页面通信初始化超时，可点击刷新重试" in js
+    assert "@media (hover: hover) and (pointer: fine)" in css
+    assert "transform: scale(0.97)" in css
+
+
 def test_popover_has_join_question_preset_editor():
     """悬浮窗内的入群问答预设编辑区：增删条目、问题可留空、答案每行一个。"""
     js = read_page("app.js")
@@ -222,6 +235,12 @@ def test_mobile_layout_uses_non_overlapping_labeled_rows():
     assert "grid-template-columns: 1fr" in css
     assert "overflow-wrap: anywhere" in css
     assert "prefers-reduced-motion" in css
+
+
+def test_bridge_timeout_timer_is_released():
+    js = read_page("app.js")
+    assert "let timer;" in js
+    assert "clearTimeout(timer);" in js
 
 
 def test_page_has_dashboard_i18n_metadata():

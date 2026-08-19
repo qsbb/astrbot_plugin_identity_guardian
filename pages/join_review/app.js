@@ -1,6 +1,7 @@
 "use strict";
 
 let bridge = null;
+let popoverTrigger = null;
 const API_PREFIX = "join-review";
 // 仅用于渲染层：当前展开行内驳回原因输入的申请 id。
 let rejectConfirmId = null;
@@ -305,6 +306,7 @@ function renderGroupRow(group) {
   const unavailable = !group.joined || !group.can_review;
   const fieldsDisabled = busy || unavailable;
   const selected = state.selected.has(key);
+  const popoverOpen = state.popoverKey === key;
   const botLabel = group.bot_name || (group.bot_id ? `QQ ${group.bot_id}` : group.platform_id);
   const statusMarkup = [
     group.configured ? '<span class="status-badge good">已配置</span>' : '<span class="status-badge">未配置</span>',
@@ -312,10 +314,10 @@ function renderGroupRow(group) {
   ].join("");
   return `<tr data-group-key="${escapeHtml(key)}" class="${unavailable ? "row-disabled" : ""}${group.pinned ? " row-pinned" : ""}">
     <td class="select-cell" data-label="选择"><input type="checkbox" data-select-group aria-label="选择群 ${escapeHtml(group.group_id)}"${selected ? " checked" : ""}${fieldsDisabled ? " disabled" : ""}></td>
-    <td class="group-cell" data-label="群"><button class="group-link" type="button" data-open-settings${fieldsDisabled ? " disabled" : ""} aria-label="配置群 ${escapeHtml(group.group_id)}">${escapeHtml(group.group_name)}</button><span class="secondary-value">${escapeHtml(group.group_id)}</span></td>
+    <td class="group-cell" data-label="群"><button class="group-link" type="button" data-open-settings aria-haspopup="dialog" aria-expanded="${popoverOpen}"${fieldsDisabled ? " disabled" : ""} aria-label="配置群 ${escapeHtml(group.group_id)}">${escapeHtml(group.group_name)}</button><span class="secondary-value">${escapeHtml(group.group_id)}</span></td>
     <td data-label="Bot / 权限"><span class="primary-value">${escapeHtml(botLabel)}</span><span class="secondary-value">${escapeHtml(group.bot_role)} · ${escapeHtml(group.platform_id)}</span>${permissionBadge(group)}</td>
     <td data-label="状态">${statusMarkup}</td>
-    <td data-label="操作"><button class="button compact" type="button" data-open-settings${fieldsDisabled ? " disabled" : ""}>设置</button></td>
+    <td data-label="操作"><button class="button compact" type="button" data-open-settings aria-haspopup="dialog" aria-expanded="${popoverOpen}"${fieldsDisabled ? " disabled" : ""}>设置</button></td>
   </tr>`;
 }
 
@@ -351,6 +353,7 @@ const SIMULATE_PREVIEW_STYLE_BADGES = {
   natural: ["自然文案（LLM 生成）", "good"],
   formatted: ["格式化模板", ""],
   natural_fallback_formatted: ["自然文案生成失败，已回退格式化模板", "bad"],
+  natural_redacted_formatted: ["已隐藏答案，使用安全格式化模板", "warn"],
 };
 const SIMULATE_OPINION_SOURCE_LABELS = {
   llm: "看法：LLM 生成",
@@ -492,7 +495,7 @@ function popoverFieldMarkup(group, disabled) {
   const notificationDisabled = group.notify_target === "target_group" || disabled;
   return `
   <div class="popover-heading">
-    <strong>${escapeHtml(group.group_name)}</strong>
+    <strong id="group-popover-title">${escapeHtml(group.group_name)}</strong>
     <span class="secondary-value">${escapeHtml(group.group_id)}</span>
   </div>
   <div class="popover-grid">
@@ -548,7 +551,12 @@ function openGroupPopover(key, anchor) {
     closeGroupPopover();
     return;
   }
+  if (popoverTrigger && document.contains(popoverTrigger)) {
+    popoverTrigger.setAttribute("aria-expanded", "false");
+  }
   state.popoverKey = key;
+  popoverTrigger = anchor;
+  anchor?.setAttribute("aria-expanded", "true");
   const popover = popoverElement();
   popover.dataset.groupKey = key;
   const busy = state.rowBusy.has(key);
@@ -559,11 +567,17 @@ function openGroupPopover(key, anchor) {
 }
 
 function closeGroupPopover() {
+  const trigger = popoverTrigger;
   state.popoverKey = null;
+  popoverTrigger = null;
   const popover = popoverElement();
   popover.classList.add("hidden");
   popover.innerHTML = "";
   delete popover.dataset.groupKey;
+  if (trigger && document.contains(trigger)) {
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.focus({ preventScroll: true });
+  }
 }
 
 // 行数据刷新后同步已打开的悬浮窗内容；群消失则关闭。
@@ -578,6 +592,7 @@ function renderOpenPopover() {
   const busy = state.rowBusy.has(state.popoverKey);
   popover.innerHTML = popoverFieldMarkup(group, busy || !group.joined || !group.can_review);
   const anchor = $(`tr[data-group-key="${CSS.escape(state.popoverKey)}"] .group-link`);
+  popoverTrigger = anchor || popoverTrigger;
   positionGroupPopover(anchor);
 }
 
@@ -1086,7 +1101,22 @@ function bindEvents() {
 async function init() {
   bindEvents();
   bridge = await resolveBridge();
-  if (typeof bridge.ready === "function") await bridge.ready();
+  if (typeof bridge.ready === "function") {
+    let timer;
+    try {
+      await Promise.race([
+        bridge.ready(),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("页面通信初始化超时，可点击刷新重试")),
+            5000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   await loadAll();
   // 设置读取失败只影响设置卡内联提示，不阻断主页面。
   await loadSettings();
