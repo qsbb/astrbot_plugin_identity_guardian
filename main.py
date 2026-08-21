@@ -83,6 +83,7 @@ from .series_diagnostics import (
     diagnostic_events as read_diagnostic_events,
     logger,
 )
+from .series_control import SeriesControlAdapter
 
 PLUGIN_NAME = "astrbot_plugin_identity_guardian"
 LOG_PREFIX = "[idg]"
@@ -154,6 +155,8 @@ class IdentityGuardianPlugin(Star):
 
         # 配置
         self.config = Config(config)
+        self._series_control = SeriesControlAdapter(self)
+        self._series_control.sync_runtime()
         self.config.apply_log_level()
         self._identity_control_plane = IdentityControlPlane(
             config=self.config,
@@ -268,6 +271,28 @@ class IdentityGuardianPlugin(Star):
             "reasons": reasons,
             "version": __version__,
         }
+
+    def _apply_series_control_runtime(self, values: dict[str, Any]) -> None:
+        self.config._raw.update(values)
+        self.config.apply_log_level()
+
+    def series_control_contract(self):
+        return self._series_control.series_control_contract()
+
+    def series_control_schema(self):
+        return self._series_control.series_control_schema()
+
+    def series_control_snapshot(self):
+        return self._series_control.series_control_snapshot()
+
+    def validate_series_control_patch(self, patch, *, expected_revision: int):
+        return self._series_control.validate_series_control_patch(patch, expected_revision=expected_revision)
+
+    def apply_series_control_patch(self, patch, *, expected_revision: int):
+        return self._series_control.apply_series_control_patch(patch, expected_revision=expected_revision)
+
+    def reset_series_control_override(self, fields=None, *, expected_revision=None):
+        return self._series_control.reset_series_control_override(fields, expected_revision=expected_revision)
 
     def diagnostic_log_contract(self) -> dict[str, object]:
         return {
