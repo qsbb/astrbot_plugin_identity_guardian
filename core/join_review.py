@@ -11,6 +11,8 @@ from .audit import AutoAuditResult, JoinAuditService
 from .group_discovery import get_aiocqhttp_bot, get_bot_group_role
 from .join_notification import JoinNotificationService, NotificationResult
 from .join_review_store import (
+    ACTIONABLE_STATUSES,
+    FINAL_STATUSES,
     JoinRequest,
     JoinReviewStore,
     ValidationError,
@@ -181,6 +183,29 @@ class JoinReviewRuntime:
         if not config.auto_audit_enabled and not config.review_send_enabled:
             return JoinReviewResult("ignored")
 
+        # A repeated OneBot request event resolves to the same opaque request ID.
+        # Finalized records must be terminal: do not re-run auto-audit or emit a
+        # second notification/push.  Actionable records may retry failed delivery,
+        # but must not re-enter the audit path and risk a second platform action.
+        request_id = self._request_id(parsed)
+        existing = await self.store.get_request(request_id)
+        if existing is not None:
+            if existing.status in FINAL_STATUSES:
+                return JoinReviewResult("already_processed", request=existing)
+            if existing.status not in ACTIONABLE_STATUSES:
+                return JoinReviewResult("already_processed", request=existing)
+            if not config.review_send_enabled:
+                return JoinReviewResult("left_on_platform", request=existing)
+            notification = await self.notification.notify(
+                event.bot,
+                existing,
+                config,
+                exclude_group_ids=resolve_push_targets(existing, config),
+            )
+            return JoinReviewResult(
+                "pending_review", request=existing, notification=notification
+            )
+
         audit_result: AutoAuditResult | None = None
         if config.auto_audit_enabled:
             # 按群问答预设优先；该群未配置时传 None，由 audit 回退全局 join_questions。
@@ -211,6 +236,22 @@ class JoinReviewRuntime:
                 )
 
         request = await self._store_request(parsed)
+        # A concurrent action may have finalized the deduplicated record while
+        # this event was being audited.  Never notify/push such a terminal record.
+        if request.status in FINAL_STATUSES:
+            return JoinReviewResult(
+                "already_processed",
+                decision=audit_result.decision if audit_result else None,
+                auto_audit=audit_result,
+                request=request,
+            )
+        if request.status not in ACTIONABLE_STATUSES:
+            return JoinReviewResult(
+                "already_processed",
+                decision=audit_result.decision if audit_result else None,
+                auto_audit=audit_result,
+                request=request,
+            )
         # 通知与推送按群去重：推送目标群不再重复发旧模板通知。
         notification = await self.notification.notify(
             event.bot,

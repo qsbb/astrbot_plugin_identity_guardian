@@ -962,9 +962,18 @@ class JoinReviewStore:
         target = _normalize_string(target_key, "target_key", maximum=256)
         key = (opaque_id, target)
         async with self._lock:
+            # Notification/push delivery is only meaningful while an application
+            # can still be acted on.  Replayed OneBot events may resolve to an
+            # already finalized request; refusing the claim here keeps every
+            # delivery path idempotent even when callers hold a stale snapshot.
+            changed = self._expire_locked(self._clock())
+            if changed:
+                self._save_locked()
             request = self._requests.get(opaque_id)
             if request is None:
                 raise RequestNotActionable("not_found")
+            if request.status not in ACTIONABLE_STATUSES:
+                return None
             if target in request.notified_targets or key in self._notification_claims:
                 return None
             token = secrets.token_urlsafe(24)
@@ -1028,7 +1037,7 @@ class JoinReviewStore:
         )
         async with self._lock:
             request = self._requests.get(opaque_id)
-            if request is None:
+            if request is None or request.status not in ACTIONABLE_STATUSES:
                 return False
             ref = {"group_id": group, "message_id": mid}
             if ref in request.push_refs:

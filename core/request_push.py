@@ -42,7 +42,7 @@ def resolve_push_targets(request: JoinRequest, config: GroupReviewConfig) -> lis
     return list(config.push_group_ids) or [request.group_id]
 
 
-def build_opinion_line(decision: Any) -> str:
+def build_opinion_line(decision: Any, *, include_reason: bool = True) -> str:
     """把自动审核 decision 渲染成一行「看法」；None 表示未经过自动审核。"""
     if decision is None:
         return "看法：该申请未经过自动审核。"
@@ -54,7 +54,7 @@ def build_opinion_line(decision: Any) -> str:
         confidence = 0.0
     reason = str(getattr(decision, "reason", "") or "").strip()[:100]
     line = f"看法：{opinion}（置信度 {confidence:.2f}）"
-    return f"{line}：{reason}" if reason else f"{line}。"
+    return f"{line}：{reason}" if include_reason and reason else f"{line}。"
 
 
 def _formatted_message(
@@ -70,7 +70,11 @@ def _formatted_message(
         source_group_name=source_group_name,
         show_source=True,
     )
-    opinion_line = f"看法：{opinion}" if opinion else build_opinion_line(decision)
+    opinion_line = (
+        f"看法：{opinion}"
+        if opinion
+        else build_opinion_line(decision, include_reason=config.include_answer)
+    )
     return f"{body}\n{opinion_line}\n{PUSH_REPLY_HINT}"
 
 
@@ -117,7 +121,8 @@ async def render_push_preview(
     """
     style = "formatted"
     opinion = ""
-    if config.push_style == "natural" and llm_caller is not None:
+    include_answer = bool(getattr(config, "include_answer", True))
+    if config.push_style == "natural" and include_answer and llm_caller is not None:
         text = ""
         try:
             result = await llm_caller(
@@ -129,7 +134,11 @@ async def render_push_preview(
         if text:
             return {"style": "natural", "text": text, "opinion_source": "llm"}
         style = "natural_fallback_formatted"
-    else:
+    elif config.push_style == "natural" and not include_answer:
+        # Natural output is unconstrained by the renderer and could repeat the
+        # hidden answer. Prefer deterministic redacted formatting instead.
+        style = "natural_redacted_formatted"
+    elif include_answer:
         opinion = await _llm_opinion(request, source_group_name, llm_caller)
     if opinion:
         opinion_source = "llm"

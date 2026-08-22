@@ -403,6 +403,50 @@ def test_rejection_is_bound_to_original_group():
     assert plugin.confirm.get(confirm_id) is not None
 
 
+def test_rejection_is_blocked_while_stopped():
+    plugin = plugin_instance()
+    plugin.confirm = main.ConfirmService()
+    plugin._stopped = True
+    plugin.config = SimpleNamespace(enable_api_guard=True)
+    plugin.cooldown = SimpleNamespace(check_breaker=lambda: False)
+    confirm_id = plugin.confirm.create("kick_member", {"user_id": "9"}, "100", "9")
+    main.IdentityGuardianPlugin._current_instance = plugin
+    try:
+        output = asyncio.run(
+            _collect_async_generator(
+                plugin.idg_reject(ApprovalEvent("100"), confirm_id)
+            )
+        )
+    finally:
+        main.IdentityGuardianPlugin._current_instance = None
+
+    assert "安全护栏拦截" in output[0]
+    assert plugin.confirm.get(confirm_id) is not None
+
+
+def test_identity_refresh_loop_survives_stop_and_resumes(monkeypatch):
+    plugin = plugin_instance()
+    plugin._stopped = True
+    plugin.config = SimpleNamespace(identity_refresh_interval=1)
+    refreshed: list[bool] = []
+    plugin.identity = SimpleNamespace(clear_cache=lambda: refreshed.append(True))
+    plugin.logger = SimpleNamespace(debug=lambda *args: None)
+    sleeps = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            plugin._stopped = False
+            return
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    asyncio.run(plugin._refresh_loop())
+
+    assert refreshed == [True]
+
+
 def test_notify_only_notifies_even_when_answer_is_correct():
     """notify_only 不自动放行时，高置信度正确结论也必须交给人工。"""
     plugin = plugin_instance()

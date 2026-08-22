@@ -334,6 +334,31 @@ def test_notification_delivery_is_idempotent_and_failure_can_retry(tmp_path):
     assert run(reloaded.notification_sent(request.request_id, "bot-a:90001"))
 
 
+@pytest.mark.parametrize("final_status", ["approved", "rejected", "expired"])
+def test_final_requests_cannot_claim_delivery_or_add_push_refs(tmp_path, final_status):
+    now = [100.0]
+    store = JoinReviewStore(tmp_path, ttl_seconds=10, clock=lambda: now[0])
+    request = _add(store, created_at=100.0)
+
+    if final_status == "expired":
+        now[0] = 111.0
+        assert run(store.cleanup_expired()) == 1
+        request = run(store.get_request(request.request_id))
+    else:
+        claim = run(store.claim_request(request.request_id))
+        request = run(
+            store.finish_request(
+                claim,
+                platform_succeeded=True,
+                status=final_status,
+            )
+        )
+
+    assert request.status == final_status
+    assert run(store.claim_notification(request.request_id, "push:30001")) is None
+    assert run(store.record_push_ref(request.request_id, "30001", "1001")) is False
+
+
 def test_close_releases_process_local_claims(tmp_path):
     store = JoinReviewStore(tmp_path)
     request = _add(store)

@@ -96,6 +96,20 @@ def test_failed_lookup_is_not_cached_and_recovers():
     assert onebot.calls == 2
 
 
+def test_role_cache_isolated_by_platform_id():
+    manager, onebot = _make_manager([{"role": "admin"}, {"role": "member"}])
+    event = SimpleNamespace()
+
+    first = asyncio.run(manager.get_role(event, "123", "555", platform_id="qq-main"))
+    second = asyncio.run(
+        manager.get_role(event, "123", "555", platform_id="qq-secondary")
+    )
+
+    assert first == "admin"
+    assert second == "member"
+    assert onebot.calls == 2
+
+
 def test_invalid_group_id_returns_member_without_call():
     manager, onebot = _make_manager([{"role": "admin"}])
     role = asyncio.run(manager.get_role(SimpleNamespace(), "not-a-group", "555"))

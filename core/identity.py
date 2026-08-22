@@ -18,8 +18,8 @@ from .relationship import RelationshipService
 # OneBot role 值映射：1=owner, 2=admin, 3=member
 _OB_ROLE_MAP: dict[int, str] = {1: "owner", 2: "admin", 3: "member"}
 
-# 缓存结构: (group_id, user_id) -> (role_str, timestamp)
-_ROLE_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
+# 缓存结构: (platform_id, group_id, user_id) -> (role_str, timestamp)
+_ROLE_CACHE: dict[tuple[str, str, str], tuple[str, float]] = {}
 
 # OneBot 实现之间 role 字段类型不统一，这里统一归一化
 _VALID_ROLES = frozenset(("owner", "admin", "member"))
@@ -59,9 +59,9 @@ class IdentityManager:
         self.onebot = onebot
         self.relationship = relationship
 
-    def _cache_get(self, group_id: str, user_id: str) -> str | None:
+    def _cache_get(self, platform_id: str, group_id: str, user_id: str) -> str | None:
         """从缓存获取角色。"""
-        key = (group_id, user_id)
+        key = (platform_id, group_id, user_id)
         entry = _ROLE_CACHE.get(key)
         if entry is None:
             return None
@@ -70,20 +70,36 @@ class IdentityManager:
             return None
         return role
 
-    def _cache_set(self, group_id: str, user_id: str, role: str) -> None:
+    def _cache_set(
+        self, platform_id: str, group_id: str, user_id: str, role: str
+    ) -> None:
         """设置缓存。"""
-        _ROLE_CACHE[(group_id, user_id)] = (role, time.time())
+        _ROLE_CACHE[(platform_id, group_id, user_id)] = (role, time.time())
 
     def clear_cache(self) -> None:
         """清空所有缓存。"""
         _ROLE_CACHE.clear()
 
-    async def get_role(self, event: Any, group_id: str, user_id: str) -> str:
+    async def get_role(
+        self,
+        event: Any,
+        group_id: str,
+        user_id: str,
+        *,
+        platform_id: str | None = None,
+    ) -> str:
         """获取用户在群中的角色。
 
         优先从缓存获取，其次调用 OneBot API 查询，失败时回退为 member。
         """
-        cached = self._cache_get(group_id, user_id)
+        if not platform_id:
+            getter = getattr(event, "get_platform_id", None)
+            try:
+                platform_id = str(getter() if callable(getter) else "")
+            except Exception:
+                platform_id = ""
+        cache_platform = platform_id or "unknown"
+        cached = self._cache_get(cache_platform, group_id, user_id)
         if cached is not None:
             return cached
 
@@ -106,7 +122,7 @@ class IdentityManager:
             )
             return Role.MEMBER.value
 
-        self._cache_set(group_id, user_id, role)
+        self._cache_set(cache_platform, group_id, user_id, role)
         return role
 
     async def get_actor_context(
@@ -122,8 +138,12 @@ class IdentityManager:
 
         从平台事件获取真实身份，不信任聊天文本中的自称。
         """
-        bot_role = await self.get_role(event, group_id, self_id)
-        requester_role = await self.get_role(event, group_id, sender_id)
+        bot_role = await self.get_role(
+            event, group_id, self_id, platform_id=platform_id
+        )
+        requester_role = await self.get_role(
+            event, group_id, sender_id, platform_id=platform_id
+        )
         requester_relation = self.relationship.relation_for(
             sender_id, requester_role, bot_role
         )
@@ -131,7 +151,9 @@ class IdentityManager:
         target_role: str | None = None
         target_relation: str | None = None
         if target_id and target_id != sender_id:
-            target_role = await self.get_role(event, group_id, target_id)
+            target_role = await self.get_role(
+                event, group_id, target_id, platform_id=platform_id
+            )
             target_relation = self.relationship.relation_for(
                 target_id, target_role or "member", bot_role
             )

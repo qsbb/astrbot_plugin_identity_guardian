@@ -286,13 +286,22 @@ class IdentityGuardianPlugin(Star):
         return self._series_control.series_control_snapshot()
 
     def validate_series_control_patch(self, patch, *, expected_revision: int):
-        return self._series_control.validate_series_control_patch(patch, expected_revision=expected_revision)
+        return self._series_control.validate_series_control_patch(
+            patch, expected_revision=expected_revision
+        )
 
     def apply_series_control_patch(self, patch, *, expected_revision: int):
-        return self._series_control.apply_series_control_patch(patch, expected_revision=expected_revision)
+        return self._series_control.apply_series_control_patch(
+            patch, expected_revision=expected_revision
+        )
 
     def reset_series_control_override(self, fields=None, *, expected_revision=None):
-        return self._series_control.reset_series_control_override(fields, expected_revision=expected_revision)
+        return self._series_control.reset_series_control_override(
+            fields, expected_revision=expected_revision
+        )
+
+    def series_control_set_mode(self, mode):
+        return self._series_control.set_mode(mode)
 
     def diagnostic_log_contract(self) -> dict[str, object]:
         return {
@@ -1280,10 +1289,19 @@ class IdentityGuardianPlugin(Star):
 
     def _check_guard(self) -> bool:
         """检查 API 层护栏。"""
-        if self._stopped:
+        if bool(getattr(self, "_stopped", False)):
             return False
-        if self.config.enable_api_guard and self.cooldown.check_breaker():
-            self.cooldown.trip_breaker()
+        config = getattr(self, "config", None)
+        cooldown = getattr(self, "cooldown", None)
+        if (
+            bool(getattr(config, "enable_api_guard", False))
+            and cooldown is not None
+            and callable(getattr(cooldown, "check_breaker", None))
+            and cooldown.check_breaker()
+        ):
+            trip_breaker = getattr(cooldown, "trip_breaker", None)
+            if callable(trip_breaker):
+                trip_breaker()
             return False
         return True
 
@@ -2278,6 +2296,9 @@ class IdentityGuardianPlugin(Star):
         if not confirm_id:
             yield event.plain_result("用法: /idg reject <confirm_id>")
             return
+        if not plugin._check_guard():
+            yield event.plain_result("操作已被安全护栏拦截（紧急停止或熔断）。")
+            return
         pending = plugin.confirm.get(confirm_id)
         if pending is None:
             yield event.plain_result(f"未找到确认 ID: {confirm_id}")
@@ -2325,11 +2346,11 @@ class IdentityGuardianPlugin(Star):
 
     async def _refresh_loop(self) -> None:
         """定时刷新身份缓存。"""
-        while not self._stopped:
+        while True:
             try:
                 await asyncio.sleep(self.config.identity_refresh_interval)
                 if self._stopped:
-                    break
+                    continue
                 self.identity.clear_cache()
                 self.logger.debug("%s scheduled identity cache refresh", LOG_PREFIX)
             except asyncio.CancelledError:
@@ -2340,11 +2361,11 @@ class IdentityGuardianPlugin(Star):
     async def _expire_pending_loop(self) -> None:
         """定时清理过期待确认条目。"""
         # 默认每 5 分钟清理一次
-        while not self._stopped:
+        while True:
             try:
                 await asyncio.sleep(300)
                 if self._stopped:
-                    break
+                    continue
                 expired = self.confirm.cleanup_expired(ttl_seconds=300)
                 if expired:
                     self.logger.info(

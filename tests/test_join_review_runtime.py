@@ -303,6 +303,60 @@ def test_handle_event_notification_unchanged_without_push_overlap(tmp_path):
     assert result.notification.sent == ("100", "300")
 
 
+@pytest.mark.parametrize("final_status", ["approved", "rejected", "expired"])
+def test_replayed_final_request_is_terminal_and_silent(tmp_path, final_status):
+    now = [100.0]
+    bot = Bot()
+    onebot = OneBotClient()
+    store = JoinReviewStore(tmp_path, ttl_seconds=10, clock=lambda: now[0])
+    audit = Audit(audit_result())
+    runtime = JoinReviewRuntime(audit, onebot, store)
+    event = Event(bot)
+    configure(
+        store,
+        auto=True,
+        send=True,
+        notify_target="both",
+        specified_group_ids=[300],
+    )
+    request = run(runtime._store_request(parse_join_request(event, raw_request())))
+
+    if final_status == "expired":
+        now[0] = 111.0
+        assert run(store.cleanup_expired()) == 1
+        request = run(store.get_request(request.request_id))
+    else:
+        claim = run(store.claim_request(request.request_id))
+        request = run(
+            store.finish_request(
+                claim,
+                platform_succeeded=True,
+                status=final_status,
+            )
+        )
+
+    result = run(runtime.handle_event(event, raw_request()))
+
+    assert result.outcome == "already_processed"
+    assert result.request is not None and result.request.status == final_status
+    assert audit.calls == 0
+    assert not any(action == "send_group_msg" for action, _ in bot.calls)
+
+
+def test_replayed_pending_request_retries_delivery_without_reaudit(tmp_path):
+    runtime, store, audit, event, bot = make_runtime(tmp_path)
+    configure(store, auto=True, send=True, push_group_ids=["400"])
+
+    first = run(runtime.handle_event(event, raw_request()))
+    second = run(runtime.handle_event(event, raw_request()))
+
+    assert first.outcome == "pending_review"
+    assert second.outcome == "pending_review"
+    assert audit.calls == 1
+    sends = [params for action, params in bot.calls if action == "send_group_msg"]
+    assert len(sends) == 1
+
+
 def test_notification_failure_keeps_pending_and_can_retry(tmp_path):
     runtime, store, _, event, bot = make_runtime(tmp_path)
     config = configure(store, auto=False, send=True)

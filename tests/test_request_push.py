@@ -163,6 +163,47 @@ def test_render_formatted_hides_answer_when_configured(tmp_path):
     assert PUSH_REPLY_HINT in message
 
 
+def test_render_formatted_hidden_answer_does_not_call_opinion_llm(tmp_path):
+    service, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, include_answer=False)
+    prompts: list[str] = []
+
+    async def llm_caller(prompt: str) -> str:
+        prompts.append(prompt)
+        return "不应被调用的评价"
+
+    message = run(
+        service.render_message(request, config, "申请群", llm_caller, make_decision())
+    )
+
+    assert "答案" not in message
+    assert "溪流" not in message
+    assert "答案完全正确" not in message
+    assert prompts == []
+
+
+def test_render_natural_redacts_answer_when_configured(tmp_path):
+    service, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_style="natural", include_answer=False)
+    prompts: list[str] = []
+
+    async def llm_caller(prompt: str) -> str:
+        prompts.append(prompt)
+        return "不应被调用的自然文案"
+
+    preview = run(
+        render_push_preview(request, config, "申请群", llm_caller, make_decision())
+    )
+
+    assert preview["style"] == "natural_redacted_formatted"
+    assert "答案" not in preview["text"]
+    assert "溪流" not in preview["text"]
+    assert "答案完全正确" not in preview["text"]
+    assert prompts == []
+
+
 def test_render_natural_uses_llm_caller_and_asks_for_opinion(tmp_path):
     service, store = make_service(tmp_path)
     request = add_request(store)
