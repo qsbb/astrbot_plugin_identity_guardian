@@ -748,7 +748,8 @@ function renderInviteGroupOptions() {
   const select = $("#invite-target-group");
   if (!select) return;
   const current = select.value;
-  const options = state.groups.filter((group) => group.joined && group.can_review);
+  // 发起邀请不是管理动作：普通群成员也可以提交邀请，最终由 QQ 群管理在平台侧通过。
+  const options = state.groups.filter((group) => group.joined);
   select.innerHTML = options.length
     ? options.map((group) => `<option value="${escapeHtml(groupKey(group.platform_id, group.group_id))}">${escapeHtml(group.group_name)}（${escapeHtml(group.group_id)}）</option>`).join("")
     : '<option value="">暂无可邀请的已加入群</option>';
@@ -761,7 +762,7 @@ async function inviteTargetMember() {
   const group = state.groupMap.get($("#invite-target-group").value);
   const userId = $("#invite-user-id").value.trim();
   if (!group) {
-    showPageError("请选择已加入且有管理权限的目标群");
+    showPageError("请选择 Bot 已加入的目标群");
     return;
   }
   if (!validateQqId(userId)) {

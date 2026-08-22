@@ -255,8 +255,6 @@ class JoinReviewPageAPI:
             source = normalize_group.get((platform_id, group_id))
             if source is None:
                 raise ValidationError("group_not_joined")
-            if not source.can_review:
-                raise ValidationError("insufficient_permission")
             target = await self.store.get_target_group(platform_id, group_id)
             if target is None or not target.enabled:
                 raise ValidationError("target_group_not_configured")

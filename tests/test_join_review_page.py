@@ -19,6 +19,7 @@ def test_page_loads_bridge_before_application_script():
 
 
 def test_page_exposes_join_review_api_contract_and_scoped_fields():
+    html = read_page("index.html")
     js = read_page("app.js")
     assert 'const API_PREFIX = "join-review"' in js
     assert "bridge.apiGet(`${API_PREFIX}/${name}`)" in js
@@ -57,6 +58,7 @@ def test_page_exposes_join_review_api_contract_and_scoped_fields():
     assert "state.targetGroups" in js
     assert "接受邀请" in js
     assert "拒绝邀请" in js
+    assert "普通群成员也可以发起邀请" in html
 
 
 def test_page_does_not_render_or_submit_onebot_flag():

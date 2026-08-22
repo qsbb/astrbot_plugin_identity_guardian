@@ -149,7 +149,8 @@ def test_target_group_can_be_registered_before_bot_joins(tmp_path, monkeypatch):
 
 def test_outbound_invite_uses_explicit_adapter_hook(tmp_path, monkeypatch):
     api, store, _, bot = make_api(tmp_path)
-    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+    # QQ 普通群成员也可以发起邀请，最终由群管理在 QQ 侧通过。
+    run(store.upsert_target_group(platform_id="qq-main", group_id="300"))
     calls = []
 
     async def invite_group_member(*, group_id, user_id):
@@ -161,22 +162,22 @@ def test_outbound_invite_uses_explicit_adapter_hook(tmp_path, monkeypatch):
         api_module,
         "request",
         FakeRequest(
-            {"platform_id": "qq-main", "group_id": "100", "user_id": "200"}
+            {"platform_id": "qq-main", "group_id": "300", "user_id": "200"}
         ),
     )
     result = response_data(run(api.invite_target_member()))
     assert result["success"] is True
-    assert calls == [(100, 200)]
+    assert calls == [(300, 200)]
 
 
 def test_outbound_invite_fails_closed_when_adapter_has_no_hook(tmp_path, monkeypatch):
     api, store, _, _ = make_api(tmp_path)
-    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+    run(store.upsert_target_group(platform_id="qq-main", group_id="300"))
     monkeypatch.setattr(
         api_module,
         "request",
         FakeRequest(
-            {"platform_id": "qq-main", "group_id": "100", "user_id": "200"}
+            {"platform_id": "qq-main", "group_id": "300", "user_id": "200"}
         ),
     )
     result = response_data(run(api.invite_target_member()))
