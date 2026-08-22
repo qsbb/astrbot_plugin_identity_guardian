@@ -92,6 +92,10 @@ def test_routes_use_join_review_prefix_and_dashboard_registration(tmp_path):
     assert api.register() is True
     assert {route[0] for route in routes} == {
         f"{ROUTE_PREFIX}/joined-groups",
+        f"{ROUTE_PREFIX}/target-groups",
+        f"{ROUTE_PREFIX}/target-groups/add",
+        f"{ROUTE_PREFIX}/target-groups/remove",
+        f"{ROUTE_PREFIX}/target-groups/invite",
         f"{ROUTE_PREFIX}/groups",
         f"{ROUTE_PREFIX}/groups/update",
         f"{ROUTE_PREFIX}/groups/batch",
@@ -113,6 +117,71 @@ def test_joined_group_refresh_is_read_only_and_uses_group_info(tmp_path):
     assert run(store.list_group_configs()) == []
     assert not store.path.exists()
     assert any(action == "get_group_info" for action, _ in bot.calls)
+
+
+def test_target_group_can_be_registered_before_bot_joins(tmp_path, monkeypatch):
+    api, store, _, _ = make_api(tmp_path)
+    monkeypatch.setattr(
+        api_module,
+        "request",
+        FakeRequest(
+            {
+                "platform_id": "qq-main",
+                "group_id": "999",
+                "group_name": "等待邀请的群",
+            }
+        ),
+    )
+    added = response_data(run(api.add_target_group()))
+    assert added["success"] is True
+    target = run(store.get_target_group("qq-main", "999"))
+    assert target is not None and target.group_name == "等待邀请的群"
+    listed = response_data(run(api.target_groups()))["data"]["groups"]
+    assert listed[0]["joined"] is False
+
+    monkeypatch.setattr(
+        api_module, "request", FakeRequest({"platform_id": "qq-main", "group_id": "999"})
+    )
+    removed = response_data(run(api.remove_target_group()))
+    assert removed["data"]["removed"] is True
+    assert run(store.get_target_group("qq-main", "999")) is None
+
+
+def test_outbound_invite_uses_explicit_adapter_hook(tmp_path, monkeypatch):
+    api, store, _, bot = make_api(tmp_path)
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+    calls = []
+
+    async def invite_group_member(*, group_id, user_id):
+        calls.append((group_id, user_id))
+        return None
+
+    bot.invite_group_member = invite_group_member
+    monkeypatch.setattr(
+        api_module,
+        "request",
+        FakeRequest(
+            {"platform_id": "qq-main", "group_id": "100", "user_id": "200"}
+        ),
+    )
+    result = response_data(run(api.invite_target_member()))
+    assert result["success"] is True
+    assert calls == [(100, 200)]
+
+
+def test_outbound_invite_fails_closed_when_adapter_has_no_hook(tmp_path, monkeypatch):
+    api, store, _, _ = make_api(tmp_path)
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+    monkeypatch.setattr(
+        api_module,
+        "request",
+        FakeRequest(
+            {"platform_id": "qq-main", "group_id": "100", "user_id": "200"}
+        ),
+    )
+    result = response_data(run(api.invite_target_member()))
+    assert result["success"] is False
+    assert result["error"] == "invite_member_unsupported"
 
 
 def test_single_update_is_strict_and_persists_only_joined_reviewable_group(

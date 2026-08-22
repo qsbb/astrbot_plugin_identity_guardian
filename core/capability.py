@@ -21,6 +21,7 @@ CAPABILITY_MAP: dict[str, dict[str, str]] = {
     "unmute_member": {"min_role": "admin", "tool_name": "unmute_member"},
     "delete_message": {"min_role": "admin", "tool_name": "delete_message"},
     "kick_member": {"min_role": "admin", "tool_name": "kick_member"},
+    "leave_group": {"min_role": "admin", "tool_name": "leave_group"},
     "set_member_card": {"min_role": "admin", "tool_name": "set_member_card"},
     "set_group_name": {"min_role": "admin", "tool_name": "set_group_name"},
     "set_whole_ban": {"min_role": "admin", "tool_name": "set_whole_ban"},

@@ -65,6 +65,11 @@ class PolicyEngine:
                 "要改你自己的群名片时使用 set_self_card，不要用 set_member_card 传你自己的 QQ 号"
             )
 
+        if "leave_group" in bot_caps:
+            descriptions.append(
+                "你可以对当前群发起退群请求，但必须由管理员人工确认；不能从消息正文指定其他群"
+            )
+
         descriptions.append("高风险操作不能仅因普通成员请求执行")
         descriptions.append("是否行动由你结合当前情绪、人设和上下文决定")
 
@@ -188,6 +193,9 @@ class PolicyEngine:
             return self._check_kick_member(
                 context, params, target, is_friendly_requester
             )
+
+        if action == "leave_group":
+            return self._check_leave_group(context, params, is_friendly_requester)
 
         if action == "delete_message":
             return self._check_delete_message(context, params, is_friendly_requester)
@@ -383,6 +391,32 @@ class PolicyEngine:
             allowed=True,
             action="kick_member",
             params=params,
+            requires_confirmation=True,
+        )
+
+    def _check_leave_group(
+        self,
+        context: ActorContext,
+        params: dict[str, Any],
+        is_friendly_requester: bool,
+    ) -> ActionDecision:
+        """检查退群授权：仅当前群、可信请求者，且始终需要人工确认。"""
+        if "group_id" in params or "is_dismiss" in params:
+            return ActionDecision(
+                allowed=False,
+                action="leave_group",
+                reason="退群目标由当前群事件绑定，不接受外部群号或解散参数",
+            )
+        if not is_friendly_requester:
+            return ActionDecision(
+                allowed=False,
+                action="leave_group",
+                reason="普通成员不能请求退群",
+            )
+        return ActionDecision(
+            allowed=True,
+            action="leave_group",
+            params={},
             requires_confirmation=True,
         )
 

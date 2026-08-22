@@ -607,6 +607,89 @@ def test_approval_failure_releases_entry_and_reports_real_reason():
     assert plugin.confirm.get(confirm_id) is None
 
 
+def test_leave_group_execution_is_bound_to_event_and_clears_identity_cache():
+    plugin = plugin_instance()
+    calls = []
+    cleared = []
+
+    class LeaveEvent:
+        bot = object()
+
+        @staticmethod
+        def get_group_id():
+            return "100"
+
+        @staticmethod
+        def get_sender_id():
+            return "9"
+
+        @staticmethod
+        def get_self_id():
+            return "8"
+
+    async def leave_group(event, group_id):
+        calls.append((event.get_group_id(), group_id))
+        return True, ""
+
+    async def get_actor(event, target_id=None):
+        return SimpleNamespace(group_id="100")
+
+    plugin.onebot = SimpleNamespace(set_group_leave=leave_group)
+    plugin.cooldown = SimpleNamespace(mark_action=lambda *args: None)
+    plugin.identity = SimpleNamespace(clear_cache=lambda: cleared.append(True))
+    plugin._get_actor = get_actor
+    plugin.audit_log = SimpleNamespace(write_from_decision=lambda *args: None)
+    decision = main.ActionDecision(
+        allowed=True,
+        action="leave_group",
+        params={},
+    )
+
+    result, ok = asyncio.run(
+        plugin._execute_action_result(LeaveEvent(), decision, None)
+    )
+    assert (result, ok) == ("已执行 leave_group。", True)
+    assert calls == [("100", 100)]
+    assert cleared == [True]
+
+
+def test_leave_group_tool_only_creates_confirmation_before_platform_call():
+    plugin = plugin_instance()
+    plugin._stopped = False
+    plugin.config = SimpleNamespace(enable_api_guard=False)
+    plugin.cooldown = SimpleNamespace(check_breaker=lambda: False)
+    plugin.confirm = main.ConfirmService()
+    plugin.policy = SimpleNamespace(
+        evaluate=lambda *args: main.ActionDecision(
+            allowed=True,
+            action="leave_group",
+            params={},
+            requires_confirmation=True,
+        )
+    )
+
+    async def get_actor(event, target_id=None):
+        return SimpleNamespace(group_id="100", requester_id="9")
+
+    async def should_not_leave(*args):
+        raise AssertionError("退群必须先人工确认")
+
+    plugin._get_actor = get_actor
+    plugin._execute_action_result = should_not_leave
+    result = asyncio.run(
+        plugin._execute_with_guard(
+            ApprovalEvent("100"),
+            "leave_group",
+            {},
+            trigger_source=main.TriggerSource.EXPLICIT_REQUEST.value,
+        )
+    )
+    assert "人工确认" in result
+    pending = plugin.confirm.list_pending()
+    assert len(pending) == 1
+    assert pending[0].action == "leave_group"
+
+
 def test_concurrent_approval_executes_platform_action_only_once():
     """并发审批同一确认单：claim 只有一个赢家，平台动作只执行一次。"""
     plugin, confirm_id = _armed_approval_plugin()

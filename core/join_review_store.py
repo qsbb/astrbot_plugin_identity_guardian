@@ -39,6 +39,7 @@ MAX_PUSH_REFS = 200
 MAX_MESSAGE_ID_LENGTH = 64
 MAX_JOIN_QUESTIONS = 50
 MAX_JOIN_QUESTION_ANSWERS = 50
+MAX_GROUP_NAME_LENGTH = 256
 
 _DECIMAL_ID_RE = re.compile(r"^[1-9][0-9]{0,19}$")
 
@@ -57,6 +58,55 @@ class RequestNotActionable(JoinReviewStoreError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+@dataclass(frozen=True, slots=True)
+class TargetGroup:
+    """管理员明确登记的目标群。
+
+    目标群可以尚未加入当前 Bot（例如等待 QQ 邀请），因此不与
+    ``GroupReviewConfig`` 或实时 ``get_group_list`` 混用。能否实际发送/接受
+    邀请仍由平台 API 的结果决定。
+    """
+
+    platform_id: str
+    group_id: str
+    group_name: str = ""
+    enabled: bool = True
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        platform_id: Any,
+        group_id: Any,
+        group_name: Any = "",
+        enabled: Any = True,
+        created_at: Any = 0.0,
+        updated_at: Any = 0.0,
+    ) -> "TargetGroup":
+        return cls(
+            platform_id=normalize_platform_id(platform_id),
+            group_id=normalize_qq_id(group_id),
+            group_name=_normalize_optional_text(
+                group_name, "group_name", MAX_GROUP_NAME_LENGTH
+            ),
+            enabled=_normalize_bool(enabled, "enabled"),
+            created_at=_normalize_timestamp(created_at, "created_at"),
+            updated_at=_normalize_timestamp(updated_at, "updated_at"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "platform_id": self.platform_id,
+            "group_id": self.group_id,
+            "group_name": self.group_name,
+            "enabled": self.enabled,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
 
 
 def _normalize_string(
@@ -424,6 +474,7 @@ class JoinRequest:
             "level": self.level or "未知",
             "question": self.question,
             "sub_type": self.sub_type,
+            "request_kind": "invitation" if self.sub_type == "invite" else "join",
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "expires_at": self.expires_at,
@@ -467,6 +518,7 @@ class JoinReviewStore:
         self.path = base if base.suffix == ".json" else base / filename
         self._lock = asyncio.Lock()
         self._groups: dict[tuple[str, str], GroupReviewConfig] = {}
+        self._target_groups: dict[tuple[str, str], TargetGroup] = {}
         self._requests: dict[str, JoinRequest] = {}
         self._request_claims: dict[str, str] = {}
         self._notification_claims: dict[tuple[str, str], str] = {}
@@ -491,6 +543,16 @@ class JoinReviewStore:
                 except (TypeError, ValidationError):
                     continue
                 self._groups[(config.platform_id, config.group_id)] = config
+        target_groups = raw.get("target_groups", [])
+        if isinstance(target_groups, list):
+            for item in target_groups:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    target = TargetGroup.create(**item)
+                except (TypeError, ValidationError):
+                    continue
+                self._target_groups[(target.platform_id, target.group_id)] = target
         requests = raw.get("requests", [])
         if isinstance(requests, list):
             for item in requests:
@@ -511,6 +573,13 @@ class JoinReviewStore:
                 config.to_dict()
                 for config in sorted(
                     self._groups.values(),
+                    key=lambda item: (item.platform_id, int(item.group_id)),
+                )
+            ],
+            "target_groups": [
+                target.to_dict()
+                for target in sorted(
+                    self._target_groups.values(),
                     key=lambda item: (item.platform_id, int(item.group_id)),
                 )
             ],
@@ -553,6 +622,71 @@ class JoinReviewStore:
         key = (normalize_platform_id(platform_id), normalize_qq_id(group_id))
         async with self._lock:
             return self._groups.get(key) or GroupReviewConfig.default(*key)
+
+    async def get_target_group(
+        self, platform_id: Any, group_id: Any
+    ) -> TargetGroup | None:
+        key = (normalize_platform_id(platform_id), normalize_qq_id(group_id))
+        async with self._lock:
+            return self._target_groups.get(key)
+
+    async def list_target_groups(
+        self, platform_id: Any | None = None
+    ) -> list[TargetGroup]:
+        platform = None if platform_id is None else normalize_platform_id(platform_id)
+        async with self._lock:
+            return sorted(
+                (
+                    target
+                    for target in self._target_groups.values()
+                    if platform is None or target.platform_id == platform
+                ),
+                key=lambda item: (item.platform_id, int(item.group_id)),
+            )
+
+    async def upsert_target_group(
+        self,
+        *,
+        platform_id: Any,
+        group_id: Any,
+        group_name: Any = "",
+        enabled: Any = True,
+    ) -> TargetGroup:
+        now = self._clock()
+        key = (normalize_platform_id(platform_id), normalize_qq_id(group_id))
+        async with self._lock:
+            old = self._target_groups.get(key)
+            target = TargetGroup.create(
+                platform_id=key[0],
+                group_id=key[1],
+                group_name=group_name,
+                enabled=enabled,
+                created_at=old.created_at if old is not None else now,
+                updated_at=now,
+            )
+            self._target_groups[key] = target
+            try:
+                self._save_locked()
+            except Exception:
+                if old is None:
+                    self._target_groups.pop(key, None)
+                else:
+                    self._target_groups[key] = old
+                raise
+            return target
+
+    async def remove_target_group(self, platform_id: Any, group_id: Any) -> bool:
+        key = (normalize_platform_id(platform_id), normalize_qq_id(group_id))
+        async with self._lock:
+            old = self._target_groups.pop(key, None)
+            if old is None:
+                return False
+            try:
+                self._save_locked()
+            except Exception:
+                self._target_groups[key] = old
+                raise
+            return True
 
     async def list_group_configs(
         self, platform_id: Any | None = None

@@ -9,6 +9,7 @@ let rejectConfirmId = null;
 const state = {
   joinedGroups: [],
   configuredGroups: [],
+  targetGroups: [],
   requests: [],
   groups: [],
   groupMap: new Map(),
@@ -52,6 +53,14 @@ const API_ERROR_MESSAGES = {
   config_unavailable: "插件配置不可写",
   config_save_failed: "配置写入失败，请查看插件日志",
   config_save_superseded: "配置已被其他修改覆盖，请刷新后重试",
+  invalid_enabled: "启用状态无效",
+  platform_unavailable: "Bot 平台当前不可用",
+  target_group_persist_failed: "目标群保存失败，请查看插件日志",
+  target_group_not_configured: "目标群未登记或已停用",
+  target_group_has_pending_invitation: "该目标群还有待处理邀请，请先处理邀请",
+  invalid_user_id: "成员 QQ 号格式不正确",
+  invite_member_unsupported: "当前 QQ 适配器不支持 Bot 主动邀请成员",
+  invite_member_failed: "主动邀请失败，请查看插件日志",
 };
 
 function $(selector, root = document) {
@@ -634,7 +643,11 @@ function formatTime(timestamp) {
 
 function groupDisplayForRequest(request) {
   const group = state.groupMap.get(groupKey(request.platform_id, request.group_id));
-  const name = stringValue(request.group_name, group?.group_name) || "未知群名";
+  const target = state.targetGroups.find((item) => (
+    String(item.platform_id) === String(request.platform_id)
+      && String(item.group_id) === String(request.group_id)
+  ));
+  const name = stringValue(request.group_name, group?.group_name, target?.group_name) || "未知群名";
   return `${name}（${request.group_id || "未知群号"}）`;
 }
 
@@ -642,6 +655,7 @@ function renderRequestCard(request) {
   const requestId = String(request.request_id || "");
   const busy = state.requestBusy.has(requestId);
   const actionable = ["pending", "platform_error"].includes(String(request.status || "pending"));
+  const invitation = request.request_kind === "invitation" || request.sub_type === "invite";
   const [statusLabel, statusClass] = requestStatus(request.status || "pending");
   const nickname = stringValue(request.nickname) || "未知";
   const userId = stringValue(request.user_id) || "未知";
@@ -650,30 +664,34 @@ function renderRequestCard(request) {
   const answer = hasOwn(request, "answer") ? (stringValue(request.answer) || "未填写") : "已按群配置隐藏";
   const error = state.requestErrors.get(requestId) || "";
   const rejectOpen = rejectConfirmId === requestId && actionable && !busy;
+  const actionLabel = invitation ? "接受邀请" : "批准";
+  const rejectLabel = invitation ? "拒绝邀请" : "驳回";
   const actionsMarkup = rejectOpen
     ? `<div class="reject-panel">
         <input class="reject-reason-input" type="text" data-reject-reason maxlength="256"
           placeholder="驳回原因（可选，将反馈给申请者）" aria-label="驳回原因">
         <div class="reject-panel-actions">
-          <button class="button compact danger" type="button" data-reject-confirm>确认驳回</button>
+          <button class="button compact danger" type="button" data-reject-confirm>${rejectLabel}</button>
           <button class="button compact" type="button" data-reject-cancel>取消</button>
         </div>
       </div>`
     : `<div class="request-actions">
-        <button class="button compact" type="button" data-request-action="approve"${!actionable || busy ? " disabled" : ""} aria-busy="${busy}">${busy ? "处理中…" : "批准"}</button>
-        <button class="button compact danger" type="button" data-request-action="reject"${!actionable || busy ? " disabled" : ""} aria-busy="${busy}">${busy ? "处理中…" : "驳回"}</button>
+        <button class="button compact" type="button" data-request-action="approve"${!actionable || busy ? " disabled" : ""} aria-busy="${busy}">${busy ? "处理中…" : actionLabel}</button>
+        <button class="button compact danger" type="button" data-request-action="reject"${!actionable || busy ? " disabled" : ""} aria-busy="${busy}">${busy ? "处理中…" : rejectLabel}</button>
       </div>`;
   return `<article class="request-card" data-request-id="${escapeHtml(requestId)}">
     <div class="request-meta">
-      <div class="request-person"><strong>${escapeHtml(nickname)}</strong><span class="secondary-value">QQ ${escapeHtml(userId)} · 等级 ${escapeHtml(level)}</span></div>
+      <div class="request-person"><strong>${invitation ? "邀请 Bot 加入" : escapeHtml(nickname)}</strong><span class="secondary-value">${invitation ? `邀请人 QQ ${escapeHtml(userId)}` : `QQ ${escapeHtml(userId)} · 等级 ${escapeHtml(level)}`}</span></div>
       <span class="status-badge group-badge">${escapeHtml(groupDisplayForRequest(request))}</span>
       <span class="status-badge ${statusClass}">${escapeHtml(statusLabel)}</span>
       <time class="request-time">${escapeHtml(formatTime(request.created_at))}</time>
     </div>
     <dl class="request-grid">
       <div class="request-field"><dt>Bot 平台</dt><dd>${escapeHtml(request.platform_id || "未知")}</dd></div>
-      <div class="request-field"><dt>问题</dt><dd>${escapeHtml(question)}</dd></div>
-      <div class="request-field"><dt>答案</dt><dd>${escapeHtml(answer)}</dd></div>
+      ${invitation
+    ? '<div class="request-field request-invitation-note"><dt>类型</dt><dd>收到群邀请；默认不会自动接受</dd></div>'
+    : `<div class="request-field"><dt>问题</dt><dd>${escapeHtml(question)}</dd></div>
+      <div class="request-field"><dt>答案</dt><dd>${escapeHtml(answer)}</dd></div>`}
     </dl>
     <div class="request-footer">
       <div class="request-error" role="alert">${escapeHtml(error)}</div>
@@ -690,6 +708,136 @@ function renderRequests() {
   const actionable = state.requests.filter((request) => ["pending", "platform_error"].includes(String(request.status || "pending"))).length;
   $("#request-summary").textContent = `${actionable} 条待处理，共 ${state.requests.length} 条记录。`;
   updateStats();
+}
+
+function renderTargetPlatformOptions() {
+  const select = $("#target-platform");
+  if (!select) return;
+  const current = select.value;
+  const platforms = Array.from(new Map(
+    [
+      ...state.joinedGroups.filter((group) => group.platform_id),
+      ...state.targetGroups.filter((group) => group.platform_id),
+    ].map((group) => [String(group.platform_id), group]),
+  ).values());
+  select.innerHTML = platforms.length
+    ? platforms.map((group) => `<option value="${escapeHtml(group.platform_id)}">${escapeHtml(group.platform_id)} · ${escapeHtml(group.bot_name || "Bot")}</option>`).join("")
+    : '<option value="">请先刷新已加入群</option>';
+  if (platforms.some((group) => String(group.platform_id) === current)) select.value = current;
+}
+
+function renderTargetGroups() {
+  renderTargetPlatformOptions();
+  const list = $("#target-groups-list");
+  if (!list) return;
+  if (!state.targetGroups.length) {
+    list.innerHTML = '<p class="empty-state">暂无目标群。添加后才能接收该群审核推送或处理 Bot 邀请。</p>';
+    return;
+  }
+  list.innerHTML = state.targetGroups.map((target) => {
+    const joinedLabel = target.joined ? `已加入 · ${target.bot_role || "未知身份"}` : "尚未加入，等待邀请";
+    const key = groupKey(target.platform_id, target.group_id);
+    return `<div class="target-group-row" data-target-key="${escapeHtml(key)}">
+      <div><strong>${escapeHtml(target.group_name || "未知群名")}</strong><span class="secondary-value">${escapeHtml(target.group_id)} · ${escapeHtml(target.platform_id)}</span></div>
+      <div class="target-group-meta"><span class="status-badge ${target.joined ? "good" : "warn"}">${escapeHtml(joinedLabel)}</span><button class="button compact danger-quiet" type="button" data-remove-target>移除</button></div>
+    </div>`;
+  }).join("");
+}
+
+function renderInviteGroupOptions() {
+  const select = $("#invite-target-group");
+  if (!select) return;
+  const current = select.value;
+  const options = state.groups.filter((group) => group.joined && group.can_review);
+  select.innerHTML = options.length
+    ? options.map((group) => `<option value="${escapeHtml(groupKey(group.platform_id, group.group_id))}">${escapeHtml(group.group_name)}（${escapeHtml(group.group_id)}）</option>`).join("")
+    : '<option value="">暂无可邀请的已加入群</option>';
+  if (options.some((group) => groupKey(group.platform_id, group.group_id) === current)) select.value = current;
+}
+
+async function inviteTargetMember() {
+  const button = $("#invite-target-member");
+  if (button.getAttribute("aria-busy") === "true") return;
+  const group = state.groupMap.get($("#invite-target-group").value);
+  const userId = $("#invite-user-id").value.trim();
+  if (!group) {
+    showPageError("请选择已加入且有管理权限的目标群");
+    return;
+  }
+  if (!validateQqId(userId)) {
+    showPageError("被邀请成员 QQ 号格式不正确");
+    return;
+  }
+  setButtonBusy(button, true, "邀请中…");
+  try {
+    await apiPost("target-groups/invite", {
+      platform_id: group.platform_id,
+      group_id: group.group_id,
+      user_id: userId,
+    });
+    $("#invite-user-id").value = "";
+    showStatus(`已向群 ${group.group_id} 发出成员邀请。`);
+  } catch (error) {
+    showPageError(error);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function loadTargetGroups() {
+  const payload = await apiGet("target-groups");
+  state.targetGroups = listFrom(payload, ["groups", "target_groups", "items"]);
+  renderTargetGroups();
+}
+
+async function addTargetGroup() {
+  const button = $("#add-target-group");
+  if (button.getAttribute("aria-busy") === "true") return;
+  const platformId = $("#target-platform").value.trim();
+  const groupId = $("#target-group-id").value.trim();
+  const groupName = $("#target-group-name").value.trim();
+  if (!platformId) {
+    showPageError("请先刷新并选择 Bot 平台");
+    return;
+  }
+  if (!validateQqId(groupId)) {
+    showPageError("目标群号格式不正确");
+    return;
+  }
+  setButtonBusy(button, true, "添加中…");
+  try {
+    await apiPost("target-groups/add", {
+      platform_id: platformId,
+      group_id: groupId,
+      group_name: groupName,
+      enabled: true,
+    });
+    $("#target-group-id").value = "";
+    $("#target-group-name").value = "";
+    await loadTargetGroups();
+    showStatus(`目标群 ${groupId} 已添加。`);
+  } catch (error) {
+    showPageError(error);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function removeTargetGroup(row) {
+  const key = row?.dataset.targetKey || "";
+  const target = state.targetGroups.find((item) => groupKey(item.platform_id, item.group_id) === key);
+  if (!target || !window.confirm(`确认移除目标群 ${target.group_id}？移除后不会再处理该群的新邀请。`)) return;
+  const button = $("[data-remove-target]", row);
+  setButtonBusy(button, true, "移除中…");
+  try {
+    await apiPost("target-groups/remove", { platform_id: target.platform_id, group_id: target.group_id });
+    await loadTargetGroups();
+    showStatus(`目标群 ${target.group_id} 已移除。`);
+  } catch (error) {
+    showPageError(error);
+  } finally {
+    setButtonBusy(button, false);
+  }
 }
 
 function validateQqId(value) {
@@ -763,12 +911,14 @@ function showFormError(container, error) {
 }
 
 async function refreshStoredData() {
-  const [groupsPayload, requestsPayload] = await Promise.all([
+  const [groupsPayload, requestsPayload, targetsPayload] = await Promise.all([
     apiGet("groups"),
     apiGet("requests"),
+    apiGet("target-groups"),
   ]);
   state.configuredGroups = listFrom(groupsPayload, ["groups", "configs", "group_configs"]);
   state.requests = listFrom(requestsPayload, ["requests", "items"]);
+  state.targetGroups = listFrom(targetsPayload, ["groups", "target_groups", "items"]);
   state.legacyAvailable = Boolean(
     groupsPayload?.legacy_available
       ?? groupsPayload?.has_legacy_config
@@ -776,19 +926,23 @@ async function refreshStoredData() {
       ?? groupsPayload?.legacy_config,
   );
   renderGroups();
+  renderInviteGroupOptions();
+  renderTargetGroups();
   renderRequests();
 }
 
 async function loadAll() {
   clearPageError();
-  const [joinedPayload, groupsPayload, requestsPayload] = await Promise.all([
+  const [joinedPayload, groupsPayload, requestsPayload, targetsPayload] = await Promise.all([
     apiGet("joined-groups"),
     apiGet("groups"),
     apiGet("requests"),
+    apiGet("target-groups"),
   ]);
   state.joinedGroups = listFrom(joinedPayload, ["groups", "joined_groups", "items"]);
   state.configuredGroups = listFrom(groupsPayload, ["groups", "configs", "group_configs"]);
   state.requests = listFrom(requestsPayload, ["requests", "items"]);
+  state.targetGroups = listFrom(targetsPayload, ["groups", "target_groups", "items"]);
   state.legacyAvailable = Boolean(
     groupsPayload?.legacy_available
       ?? groupsPayload?.has_legacy_config
@@ -796,6 +950,8 @@ async function loadAll() {
       ?? groupsPayload?.legacy_config,
   );
   renderGroups();
+  renderInviteGroupOptions();
+  renderTargetGroups();
   renderRequests();
 }
 
@@ -807,7 +963,9 @@ async function refreshJoinedGroups() {
   try {
     const payload = await apiGet("joined-groups");
     state.joinedGroups = listFrom(payload, ["groups", "joined_groups", "items"]);
+    await loadTargetGroups();
     renderGroups();
+    renderInviteGroupOptions();
     showStatus("已刷新当前 aiocqhttp Bot 加入的群；本次只读操作未修改配置。");
   } catch (error) {
     showPageError(error);
@@ -948,7 +1106,11 @@ async function handleRequestAction(card, action, reason = "") {
     if (action === "reject" && reason) payload.reason = reason;
     await apiPost(action, payload);
     await refreshStoredData();
-    showStatus(action === "approve" ? "申请已批准。" : "申请已驳回。");
+    const invitation = card.querySelector(".request-invitation-note") !== null
+      || card.textContent.includes("邀请 Bot 加入");
+    showStatus(invitation
+      ? (action === "approve" ? "邀请已接受，等待 Bot 进群事件确认。" : "邀请已拒绝。")
+      : (action === "approve" ? "申请已批准。" : "申请已驳回。"));
   } catch (error) {
     state.requestErrors.set(requestId, error?.message || String(error));
   } finally {
@@ -970,6 +1132,25 @@ function syncToggleLabel(input) {
 
 function bindEvents() {
   $("#refresh-joined").addEventListener("click", refreshJoinedGroups);
+  $("#refresh-target-groups").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (button.getAttribute("aria-busy") === "true") return;
+    setButtonBusy(button, true, "刷新中…");
+    try {
+      await loadTargetGroups();
+      showStatus("目标群列表已刷新。");
+    } catch (error) {
+      showPageError(error);
+    } finally {
+      setButtonBusy(button, false);
+    }
+  });
+  $("#add-target-group").addEventListener("click", addTargetGroup);
+  $("#invite-target-member").addEventListener("click", inviteTargetMember);
+  $("#target-groups-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-target]");
+    if (button) removeTargetGroup(button.closest("[data-target-key]"));
+  });
   $("#simulate-run").addEventListener("click", runSimulate);
   $("#refresh-requests").addEventListener("click", async (event) => {
     const button = event.currentTarget;

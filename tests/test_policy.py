@@ -483,6 +483,44 @@ def test_member_bot_can_set_self_card():
     assert decision.allowed is True
 
 
+def test_leave_group_requires_trusted_requester_and_confirmation():
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(requester_relation="friendly")
+    decision = engine.evaluate(
+        actor,
+        "leave_group",
+        {},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is True
+    assert decision.requires_confirmation is True
+    assert decision.params == {}
+
+    ordinary = engine.evaluate(
+        _make_actor(requester_relation="normal"),
+        "leave_group",
+        {},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert ordinary.allowed is False
+    assert "普通成员" in ordinary.reason
+
+
+def test_leave_group_rejects_external_target_or_dismiss_parameters():
+    engine = PolicyEngine(_make_config())
+    actor = _make_actor(requester_relation="friendly")
+    for params in ({"group_id": "999"}, {"is_dismiss": True}):
+        decision = engine.evaluate(
+            actor,
+            "leave_group",
+            params,
+            TriggerSource.EXPLICIT_REQUEST.value,
+        )
+        assert decision.allowed is False
+        assert "当前群事件绑定" in decision.reason
+
+
 def test_member_bot_set_member_card_on_self_is_rewritten():
     """bot 为普通成员，用 set_member_card 指向自己 — 重写为 set_self_card 并允许。"""
     cfg = _make_config()

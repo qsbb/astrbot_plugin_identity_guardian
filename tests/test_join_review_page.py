@@ -25,6 +25,10 @@ def test_page_exposes_join_review_api_contract_and_scoped_fields():
     assert "bridge.apiPost(`${API_PREFIX}/${name}`, payload)" in js
     for endpoint in (
         'apiGet("joined-groups")',
+        'apiGet("target-groups")',
+        'apiPost("target-groups/add"',
+        'apiPost("target-groups/remove"',
+        'apiPost("target-groups/invite"',
         'apiGet("groups")',
         'apiGet("requests")',
         'apiPost("groups/update"',
@@ -50,6 +54,9 @@ def test_page_exposes_join_review_api_contract_and_scoped_fields():
     assert 'runBatch("apply_legacy")' in js
     assert "legacyAvailable" in js
     assert "row-pinned" in js
+    assert "state.targetGroups" in js
+    assert "接受邀请" in js
+    assert "拒绝邀请" in js
 
 
 def test_page_does_not_render_or_submit_onebot_flag():
@@ -107,6 +114,27 @@ def test_page_group_settings_popover():
     assert 'apiPost("groups/update", payload)' in js
     assert ".group-popover" in css
     assert ".group-link" in css
+
+
+def test_page_has_target_group_management():
+    html = read_page("index.html")
+    js = read_page("app.js")
+    css = read_page("style.css")
+    for marker in (
+        'id="target-groups-title"',
+        'id="target-platform"',
+        'id="target-group-id"',
+        'id="add-target-group"',
+        'id="target-groups-list"',
+        'id="invite-target-group"',
+        'id="invite-user-id"',
+        'id="invite-target-member"',
+        "renderTargetGroups",
+        "addTargetGroup",
+        "removeTargetGroup",
+    ):
+        assert marker in html or marker in js
+    assert ".target-group-row" in css
 
 
 def test_page_popover_has_focus_and_ready_failure_feedback():

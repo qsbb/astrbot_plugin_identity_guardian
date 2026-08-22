@@ -11,7 +11,11 @@ except ImportError:  # pragma: no cover - isolated unit tests mock AstrBot
     json_response = None
     request = None
 
-from .group_discovery import JoinedGroup, discover_joined_groups
+from .group_discovery import (
+    JoinedGroup,
+    discover_joined_groups,
+    get_aiocqhttp_bot,
+)
 from .join_review import GuardBlockedError, JoinReviewRuntime, resolve_presets
 from .join_review_store import (
     JoinReviewStore,
@@ -74,6 +78,10 @@ class JoinReviewPageAPI:
             return False
         routes = (
             ("joined-groups", self.joined_groups, ["GET"], "刷新已加入群"),
+            ("target-groups", self.target_groups, ["GET"], "读取目标群"),
+            ("target-groups/add", self.add_target_group, ["POST"], "添加目标群"),
+            ("target-groups/remove", self.remove_target_group, ["POST"], "移除目标群"),
+            ("target-groups/invite", self.invite_target_member, ["POST"], "邀请成员入群"),
             ("groups", self.groups, ["GET"], "读取入群审核群配置"),
             ("groups/update", self.update_group, ["POST"], "保存单群审核配置"),
             ("groups/batch", self.batch_groups, ["POST"], "批量保存群审核配置"),
@@ -133,13 +141,15 @@ class JoinReviewPageAPI:
         if not isinstance(specified, (list, tuple)):
             raise ValidationError("invalid_specified_group_ids")
         for target_group_id in specified:
-            if (platform_id, str(target_group_id).strip()) not in rows:
+            key = (platform_id, str(target_group_id).strip())
+            if key not in rows:
                 raise ValidationError("specified_group_not_joined")
         push_groups = payload.get("push_group_ids", ())
         if not isinstance(push_groups, (list, tuple)):
             raise ValidationError("invalid_push_group_ids")
         for push_group_id in push_groups:
-            if (platform_id, str(push_group_id).strip()) not in rows:
+            key = (platform_id, str(push_group_id).strip())
+            if key not in rows:
                 raise ValidationError("push_group_not_joined")
 
     async def joined_groups(self) -> Any:
@@ -151,6 +161,139 @@ class JoinReviewPageAPI:
                 "[idg] join-review discovery failed: %s", type(exc).__name__
             )
             return self._error("group_discovery_failed", 502)
+
+    async def target_groups(self) -> Any:
+        """Return explicitly registered target groups with live join state."""
+        discovered = self._discovery_map(await self._discovered())
+        rows = []
+        for target in await self.store.list_target_groups():
+            live = discovered.get((target.platform_id, target.group_id))
+            value = target.to_dict()
+            value.update(
+                {
+                    "joined": live is not None,
+                    "group_name": (live.group_name if live else target.group_name)
+                    or "未知群名",
+                    "bot_role": live.bot_role if live else "未加入",
+                    "can_review": live.can_review if live else False,
+                }
+            )
+            rows.append(value)
+        return self._response({"data": {"groups": rows}})
+
+    async def add_target_group(self) -> Any:
+        payload = await self._payload()
+        if payload is None or set(payload) - {
+            "platform_id",
+            "group_id",
+            "group_name",
+            "enabled",
+        } or not {"platform_id", "group_id"} <= set(payload):
+            return self._error("invalid_request")
+        platform_id = str(payload.get("platform_id") or "").strip()
+        group_id = str(payload.get("group_id") or "").strip()
+        group_name = str(payload.get("group_name") or "").strip()
+        enabled = payload.get("enabled", True)
+        if not isinstance(enabled, bool):
+            return self._error("invalid_enabled")
+        if get_aiocqhttp_bot(self.context, platform_id) is None:
+            return self._error("platform_unavailable", 409)
+        live = self._discovery_map(await self._discovered()).get(
+            (platform_id, group_id)
+        )
+        if live is not None:
+            group_name = live.group_name
+        try:
+            target = await self.store.upsert_target_group(
+                platform_id=platform_id,
+                group_id=group_id,
+                group_name=group_name,
+                enabled=enabled,
+            )
+        except ValidationError as exc:
+            return self._error(str(exc))
+        except Exception as exc:
+            self.logger.warning(
+                "[idg] target group add failed: %s", type(exc).__name__
+            )
+            return self._error("target_group_persist_failed", 500)
+        return self._response({"data": {"group": target.to_dict()}})
+
+    async def remove_target_group(self) -> Any:
+        payload = await self._payload()
+        if payload is None or set(payload) != {"platform_id", "group_id"}:
+            return self._error("invalid_request")
+        try:
+            actionable = await self.store.list_requests(
+                platform_id=payload["platform_id"],
+                group_id=payload["group_id"],
+                status=("pending", "platform_error"),
+            )
+            if any(item.sub_type == "invite" for item in actionable):
+                return self._error("target_group_has_pending_invitation", 409)
+            removed = await self.store.remove_target_group(
+                payload["platform_id"], payload["group_id"]
+            )
+        except ValidationError as exc:
+            return self._error(str(exc))
+        return self._response({"data": {"removed": removed}})
+
+    async def invite_target_member(self) -> Any:
+        """Request an outbound member invitation through an adapter extension."""
+        payload = await self._payload()
+        if payload is None or set(payload) != {
+            "platform_id",
+            "group_id",
+            "user_id",
+        }:
+            return self._error("invalid_request")
+        platform_id = str(payload.get("platform_id") or "").strip()
+        group_id = str(payload.get("group_id") or "").strip()
+        user_id = str(payload.get("user_id") or "").strip()
+        try:
+            normalize_group = self._discovery_map(await self._discovered())
+            source = normalize_group.get((platform_id, group_id))
+            if source is None:
+                raise ValidationError("group_not_joined")
+            if not source.can_review:
+                raise ValidationError("insufficient_permission")
+            target = await self.store.get_target_group(platform_id, group_id)
+            if target is None or not target.enabled:
+                raise ValidationError("target_group_not_configured")
+            # Reuse the strict QQ identifier validator without accepting an
+            # arbitrary string in a platform action.
+            from .join_review_store import normalize_qq_id
+
+            normalized_user_id = normalize_qq_id(user_id, "user_id")
+            bot = get_aiocqhttp_bot(self.context, platform_id)
+            if bot is None:
+                return self._error("platform_unavailable", 409)
+            ok, reason = await self.runtime.onebot.invite_group_member_for_bot(
+                bot, int(group_id), int(normalized_user_id)
+            )
+        except ValidationError as exc:
+            return self._error(str(exc))
+        except (TypeError, ValueError):
+            return self._error("invalid_user_id")
+        except Exception as exc:
+            self.logger.warning(
+                "[idg] target group invite failed: %s", type(exc).__name__
+            )
+            return self._error("invite_member_failed", 502)
+        if not ok:
+            if "unsupported" in reason:
+                return self._error("invite_member_unsupported", 501)
+            return self._error("invite_member_failed", 502)
+        return self._response(
+            {
+                "data": {
+                    "invited": True,
+                    "platform_id": platform_id,
+                    "group_id": group_id,
+                    "user_id": normalized_user_id,
+                }
+            }
+        )
 
     def _legacy_available(self) -> bool:
         return str(getattr(self.config, "join_audit_mode", "off")) in {

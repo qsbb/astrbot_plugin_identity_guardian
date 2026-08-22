@@ -9,8 +9,10 @@ from core.onebot import OneBotClient
 class _Bot:
     def __init__(self, response):
         self.response = response
+        self.calls = []
 
     async def call_action(self, action, **params):
+        self.calls.append((action, params))
         return self.response
 
 
@@ -117,6 +119,16 @@ def test_set_group_card_reports_failure_on_action_failed():
     )
     assert ok is False
     assert err == "set_group_card failed"
+
+
+def test_set_group_leave_uses_current_group_and_never_dismisses():
+    bot = _Bot(None)
+    event = SimpleNamespace(bot=bot)
+    ok, err = asyncio.run(OneBotClient().set_group_leave(event, 10001))
+    assert (ok, err) == (True, "")
+    assert bot.calls == [
+        ("set_group_leave", {"group_id": 10001, "is_dismiss": False})
+    ]
 
 
 def test_send_group_message_with_id_returns_message_id():

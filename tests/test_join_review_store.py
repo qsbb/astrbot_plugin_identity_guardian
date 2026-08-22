@@ -165,6 +165,22 @@ def test_request_public_projection_never_exposes_flag_or_internal_error(tmp_path
         assert forbidden not in public
 
 
+def test_target_group_roundtrip_and_invitation_projection(tmp_path):
+    store = JoinReviewStore(tmp_path)
+    target = run(
+        store.upsert_target_group(
+            platform_id="bot-a", group_id="10001", group_name="目标群"
+        )
+    )
+    assert target.enabled is True
+    loaded = run(store.get_target_group("bot-a", "10001"))
+    assert loaded is not None and loaded.group_name == "目标群"
+    invite = _add(store, request_id="invite-id", sub_type="invite", answer="")
+    public = invite.to_public_dict()
+    assert public["request_kind"] == "invitation"
+    assert "flag" not in public
+
+
 def test_request_text_limits_and_event_deduplication(tmp_path):
     store = JoinReviewStore(tmp_path)
     first = _add(store)

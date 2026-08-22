@@ -208,6 +208,14 @@ AstrBot 插件详情中的 `pages/join_review` 是当前生效的入群审核控
 `platform_id + group_id` 隔离；刷新已加入群只读 OneBot `get_group_list` / 群信息和权限，
 不会自动写配置。新群与未配置群的两个开关均默认关闭。
 
+Page 还提供独立的「目标群聊」登记。目标群可在 Bot 尚未加入时提前登记，用于等待该群发来的
+Bot 邀请；目标群不会被当作已加入群，也不能直接写入推送目标。收到已登记目标群的 OneBot
+`request_type=group, sub_type=invite` 后，申请会进入 Page 待审列表，默认不调用 LLM、不自动接受。
+管理员可在 Page 点击「接受邀请」或「拒绝邀请」，动作通过原始 OneBot `flag` 事务提交；`flag`
+不会返回给浏览器。相同页面也提供「邀请成员」入口，但只在当前适配器明确暴露
+`invite_group_member` 或 `send_group_invite` 扩展时执行；标准 OneBot 没有 Bot 主动邀请成员的
+通用接口，未提供扩展时会失败关闭并显示不支持，不会错误调用 `set_group_add_request`。
+
 | 自动审核 | 发送审核 | 行为 |
 | --- | --- | --- |
 | 关 | 关 | 忽略申请，保持 QQ 原始状态 |
@@ -338,6 +346,7 @@ natural 自然语言文案（都会真实调用 `push_llm_provider` 指定的 LL
 | `mute_member` | 禁言指定群成员。仅友好用户（主人 / 管理员）请求时可用 |
 | `unmute_member` | 解除指定群成员的禁言 |
 | `kick_member` | 踢出指定群成员。高风险操作，需人工确认 |
+| `leave_group` | 退出当前群。目标由当前事件绑定，不接受群号参数；始终需要人工确认，不支持解散群 |
 | `delete_message` | 撤回一条群消息 |
 | `set_member_card` | 设置群成员名片。普通成员只能修改自己的名片 |
 | `set_group_name` | 修改群名称。需人工确认 |

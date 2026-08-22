@@ -1118,6 +1118,88 @@ input[type="checkbox"] {
   max-width: 560px;
 }
 
+.target-group-form {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(150px, 1fr) minmax(180px, 1.2fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.target-groups-list {
+  display: grid;
+  gap: 8px;
+}
+
+.target-group-invite-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--panel-3);
+}
+
+.target-group-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.target-group-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--panel-3);
+}
+
+.target-group-row > div:first-child,
+.target-group-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.target-group-row .secondary-value {
+  overflow-wrap: anywhere;
+}
+
+.request-invitation-note dd {
+  color: var(--warn);
+}
+
+@media (max-width: 780px) {
+  .target-group-form,
+  .target-group-invite-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .target-group-form > button,
+  .target-group-invite-form > button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .target-group-form,
+  .target-group-invite-form {
+    grid-template-columns: 1fr;
+  }
+
+  .target-group-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 .simulate-result {
   margin-top: 14px;
   display: grid;

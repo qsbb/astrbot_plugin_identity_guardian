@@ -150,6 +150,46 @@ def test_send_only_skips_auto_audit_and_queues(tmp_path):
     assert any(action == "send_group_msg" for action, _ in bot.calls)
 
 
+def test_invitation_requires_target_registration_and_skips_audit(tmp_path):
+    runtime, store, audit, event, bot = make_runtime(tmp_path)
+    invite = raw_request(sub_type="invite", comment="")
+    ignored = run(runtime.handle_event(event, invite))
+    assert ignored.outcome == "ignored"
+    assert audit.calls == 0
+    run(
+        store.upsert_target_group(
+            platform_id="qq-main", group_id="100", group_name="申请群"
+        )
+    )
+    result = run(runtime.handle_event(event, invite))
+    assert result.outcome == "pending_invitation"
+    assert result.request is not None
+    assert result.request.sub_type == "invite"
+    assert audit.calls == 0
+    assert not any(action in {"send_group_msg", "get_group_member_info"} for action, _ in bot.calls)
+
+
+def test_invitation_approval_forwards_invite_subtype_without_group_role_lookup(tmp_path):
+    runtime, store, _, event, bot = make_runtime(tmp_path)
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+    request = run(
+        runtime._store_request(parse_join_request(event, raw_request(sub_type="invite", comment="")))
+    )
+    context = SimpleNamespace(
+        get_platform_inst=lambda platform_id: (
+            SimpleNamespace(get_client=lambda: bot, meta=lambda: SimpleNamespace(id="qq-main", name="aiocqhttp"))
+            if platform_id == "qq-main" else None
+        ),
+        platform_manager=SimpleNamespace(get_insts=lambda: []),
+    )
+    updated = run(runtime.process_request(context, request.request_id, approve=True))
+    assert updated.status == "approved"
+    action = next(item for item in bot.calls if item[0] == "set_group_add_request")
+    assert action[1]["sub_type"] == "invite"
+    assert action[1]["approve"] is True
+    assert not any(action_name == "get_group_member_info" for action_name, _ in bot.calls)
+
+
 def test_both_enabled_stops_only_after_platform_approval(tmp_path):
     runtime, store, audit, event, bot = make_runtime(
         tmp_path, audit_result(approved=True)

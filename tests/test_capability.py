@@ -43,6 +43,7 @@ def test_admin_capabilities():
     assert "set_member_title" not in caps
     assert "set_group_admin" not in caps
     assert "set_self_card" in caps
+    assert "leave_group" in caps
 
 
 def test_member_capabilities():
@@ -53,6 +54,7 @@ def test_member_capabilities():
     assert "list_group_members" in caps
     assert "mute_member" not in caps
     assert "kick_member" not in caps
+    assert "leave_group" not in caps
     assert "set_member_title" not in caps
 
 
@@ -62,6 +64,7 @@ def test_min_role_for_capability():
     assert min_role_for_capability("set_group_admin") == "owner"
     assert min_role_for_capability("mute_member") == "admin"
     assert min_role_for_capability("set_self_card") == "member"
+    assert min_role_for_capability("leave_group") == "admin"
 
 
 def test_tool_name_mapping():

@@ -179,6 +179,12 @@ class JoinReviewRuntime:
 
     async def handle_event(self, event: Any, raw: dict[str, Any]) -> JoinReviewResult:
         parsed = parse_join_request(event, raw)
+        if parsed.sub_type == "invite":
+            return await self._handle_invitation(parsed)
+        # OneBot may add request sub-types in the future. Do not feed an
+        # unknown request into the question/answer auditor by accident.
+        if parsed.sub_type != "add":
+            return JoinReviewResult("ignored")
         config = await self.store.get_group_config(parsed.platform_id, parsed.group_id)
         if not config.auto_audit_enabled and not config.review_send_enabled:
             return JoinReviewResult("ignored")
@@ -267,6 +273,32 @@ class JoinReviewRuntime:
             notification=notification,
         )
 
+    async def _handle_invitation(
+        self, parsed: ParsedJoinRequest
+    ) -> JoinReviewResult:
+        """Queue a configured incoming Bot invitation for manual review.
+
+        An invitation has no join-question answer and must never enter the
+        answer auditor or auto-approval path. The target group must have been
+        explicitly registered in the Page first; this prevents unsolicited
+        invitations from becoming an actionable platform request.
+        """
+        target = await self.store.get_target_group(
+            parsed.platform_id, parsed.group_id
+        )
+        if target is None or not target.enabled:
+            return JoinReviewResult("ignored")
+        request_id = self._request_id(parsed)
+        existing = await self.store.get_request(request_id)
+        if existing is not None:
+            if existing.status in FINAL_STATUSES:
+                return JoinReviewResult("already_processed", request=existing)
+            if existing.status in ACTIONABLE_STATUSES:
+                return JoinReviewResult("pending_invitation", request=existing)
+            return JoinReviewResult("already_processed", request=existing)
+        request = await self._store_request(parsed)
+        return JoinReviewResult("pending_invitation", request=request)
+
     async def process_request(
         self,
         context: Any,
@@ -285,6 +317,19 @@ class JoinReviewRuntime:
             bot = get_aiocqhttp_bot(context, request.platform_id)
             if bot is None:
                 return False, "platform_unavailable"
+            if request.sub_type == "invite":
+                target = await self.store.get_target_group(
+                    request.platform_id, request.group_id
+                )
+                if target is None or not target.enabled:
+                    return False, "target_group_not_configured"
+                return await self.onebot.set_group_add_request_for_bot(
+                    bot,
+                    request.flag,
+                    "invite",
+                    approve=approve,
+                    reason=_bounded_text(reason, 256) if not approve else "",
+                )
             role = await get_bot_group_role(self.onebot, bot, request.group_id)
             if role not in {"owner", "admin"}:
                 return False, "permission_denied"

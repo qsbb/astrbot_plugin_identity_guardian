@@ -98,6 +98,29 @@
       </div>
     </article>
 
+    <article class="card" aria-labelledby="target-groups-title">
+      <div class="section-heading">
+        <div>
+          <h2 id="target-groups-title">目标群聊</h2>
+          <p>登记需要接收审核推送或等待 Bot 入群邀请的群。目标群可以尚未加入，接受邀请前不会自动执行任何动作。</p>
+        </div>
+        <button id="refresh-target-groups" class="button secondary compact" type="button">↻ 刷新目标群</button>
+      </div>
+      <div class="target-group-form" aria-label="添加目标群">
+        <label class="popover-field"><span>Bot 平台</span><select id="target-platform" class="inline-select"><option value="">请先刷新已加入群</option></select></label>
+        <label class="popover-field"><span>群号</span><input id="target-group-id" class="group-whitelist" type="text" inputmode="numeric" maxlength="20" placeholder="例如 123456789"></label>
+        <label class="popover-field"><span>群名（可选）</span><input id="target-group-name" class="group-whitelist" type="text" maxlength="256" placeholder="未加入时用于页面识别"></label>
+        <button id="add-target-group" class="button compact primary" type="button">添加目标群</button>
+      </div>
+      <div class="target-group-invite-form" aria-label="邀请成员入群">
+        <label class="popover-field"><span>邀请到群</span><select id="invite-target-group" class="inline-select"><option value="">暂无可邀请的已加入群</option></select></label>
+        <label class="popover-field"><span>成员 QQ</span><input id="invite-user-id" class="group-whitelist" type="text" inputmode="numeric" maxlength="20" placeholder="被邀请成员 QQ 号"></label>
+        <button id="invite-target-member" class="button compact" type="button">邀请成员</button>
+        <p class="target-group-hint">仅调用适配器明确提供的主动邀请能力；标准 OneBot V11 未提供时会明确提示不支持。</p>
+      </div>
+      <div id="target-groups-list" class="target-groups-list" aria-live="polite"><p class="empty-state">正在加载…</p></div>
+    </article>
+
     <article class="card" aria-labelledby="requests-title">
       <div class="section-heading request-heading">
         <div>

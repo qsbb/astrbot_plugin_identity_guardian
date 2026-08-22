@@ -1805,6 +1805,9 @@ class IdentityGuardianPlugin(Star):
                 reject_add_request=bool(params.get("reject_add_request", False)),
             )
 
+        elif action == "leave_group":
+            ok, err = await self.onebot.set_group_leave(event, group_id)
+
         elif action == "delete_message":
             msg_id = int(params.get("message_id", 0))
             if msg_id <= 0:
@@ -1862,6 +1865,11 @@ class IdentityGuardianPlugin(Star):
         actor = await self._get_actor(event, target_id)
         if actor:
             self.audit_log.write_from_decision(actor, decision, ok, err)
+
+        if ok and action == "leave_group":
+            clear_cache = getattr(self.identity, "clear_cache", None)
+            if callable(clear_cache):
+                clear_cache()
 
         if ok:
             return f"已执行 {action}。", True
@@ -1989,6 +1997,23 @@ class IdentityGuardianPlugin(Star):
             {"user_id": user_id, "reason": reason},
             trigger_source=TriggerSource.EXPLICIT_REQUEST.value,
             target_id=user_id,
+        )
+
+    @filter.llm_tool(name="leave_group")
+    async def leave_group(self, event: AstrMessageEvent):
+        """发起退出当前群的请求。
+
+        目标群由当前群聊事件绑定，不接受群号参数，也不支持解散群。
+        这是高风险操作，即使策略允许也只会创建人工确认单。
+        """
+        plugin = IdentityGuardianPlugin._current_instance or self
+        if not isinstance(plugin, IdentityGuardianPlugin):
+            return "插件初始化中，请稍后重试。"
+        return await plugin._execute_with_guard(
+            event,
+            "leave_group",
+            {},
+            trigger_source=TriggerSource.EXPLICIT_REQUEST.value,
         )
 
     @filter.llm_tool(name="delete_message")
