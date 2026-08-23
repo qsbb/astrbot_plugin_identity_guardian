@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import inspect
 import json
@@ -1055,10 +1056,7 @@ class IdentityGuardianPlugin(Star):
         if event.get_platform_name() != "aiocqhttp":
             return
 
-        group_id = event.get_group_id()
-        if not group_id:
-            return  # 私聊不注入群身份
-
+        group_id = str(event.get_group_id() or "")
         self_id = event.get_self_id()
         sender_id = event.get_sender_id()
         if not self_id or not sender_id:
@@ -1068,18 +1066,30 @@ class IdentityGuardianPlugin(Star):
 
         plugin._ensure_llm_caller()
 
-        # 构建身份上下文
-        try:
-            actor = await plugin.identity.get_actor_context(
-                event,
-                event.get_platform_id(),
-                group_id,
-                self_id,
-                sender_id,
-            )
-        except Exception as exc:
-            plugin.logger.debug("%s identity lookup failed: %s", LOG_PREFIX, exc)
-            return
+        # 群聊使用实时群身份；私聊仅为已配置的主人/控制管理员注入控制面边界，
+        # 这样主链路才能在私聊中识别 leave_group/join_group，而不会把普通私聊
+        # 用户误当作有平台操作权限的控制者。
+        if group_id:
+            try:
+                actor = await plugin.identity.get_actor_context(
+                    event,
+                    event.get_platform_id(),
+                    group_id,
+                    self_id,
+                    sender_id,
+                )
+            except Exception as exc:
+                plugin.logger.debug("%s identity lookup failed: %s", LOG_PREFIX, exc)
+                return
+            group_meta = await plugin.onebot.get_group_info_safe(event, group_id)
+        else:
+            actor = await plugin._get_control_actor(event)
+            if actor is None:
+                return
+            group_meta = {
+                "group_name": "私聊控制会话",
+                "group_id": "",
+            }
 
         removed = plugin._filter_tools_for_bot_role(req, actor.bot_role)
         if removed:
@@ -1093,9 +1103,6 @@ class IdentityGuardianPlugin(Star):
 
         # 生成允许行动描述
         allowed = plugin.policy.allowed_actions(actor)
-
-        # 获取群信息
-        group_meta = await plugin.onebot.get_group_info_safe(event, group_id)
 
         # 构建提示词
         prompt = build_identity_prompt(actor, allowed, group_meta)
@@ -1430,7 +1437,7 @@ class IdentityGuardianPlugin(Star):
 
         actor = await (
             self._get_control_actor(event, target_id)
-            if action in {"join_group"}
+            if action in {"join_group", "leave_group"}
             else self._get_actor(event, target_id)
         )
         if actor is None:
@@ -1873,10 +1880,19 @@ class IdentityGuardianPlugin(Star):
         """执行具体的 OneBot API 调用，返回 ``(结果文案, 是否成功)``。"""
         action = decision.action
         params = decision.params
-        group_id_str = event.get_group_id()
+        event_group_id = str(event.get_group_id() or "")
+        requested_group_id = str(params.get("group_id") or "").strip()
+        if action in {"join_group", "leave_group"}:
+            group_id_str = requested_group_id or event_group_id
+        else:
+            group_id_str = event_group_id
 
         if action == "join_group":
             group_id = 0
+        elif action == "leave_group":
+            if not group_id_str.isdigit() or group_id_str == "0":
+                return "退群目标群号无效。", False
+            group_id = int(group_id_str)
         else:
             try:
                 group_id = int(group_id_str)
@@ -1924,6 +1940,44 @@ class IdentityGuardianPlugin(Star):
             )
 
         elif action == "leave_group":
+            bot = getattr(event, "bot", None)
+            self_id = str(event.get_self_id() or "").strip()
+            if bot is None or not self_id.isdigit() or int(self_id) <= 0:
+                return "无法确认机器人在目标群中的成员状态，未执行退群。", False
+            get_member = getattr(
+                self.onebot, "get_group_member_info_for_bot", None
+            )
+            if not callable(get_member):
+                return "当前适配器不支持成员状态查询，未执行退群。", False
+            try:
+                member = await get_member(
+                    bot, group_id, int(self_id), no_cache=True
+                )
+            except Exception:
+                member = None
+            reported_id = (
+                str(member.get("user_id") or "").strip()
+                if isinstance(member, dict)
+                else ""
+            )
+            if reported_id != self_id:
+                get_groups = getattr(self.onebot, "get_group_list", None)
+                try:
+                    groups = (
+                        await get_groups(event) if callable(get_groups) else None
+                    )
+                except Exception:
+                    groups = None
+                if groups is None:
+                    return "无法确认机器人仍在目标群中，未执行退群。", False
+                in_group_list = any(
+                    str(item.get("group_id") or "").strip() == group_id_str
+                    for item in groups
+                    if isinstance(item, dict)
+                )
+                if in_group_list:
+                    return "平台群列表显示机器人在目标群，但成员信息查询失败，未执行退群。", False
+                return "平台查询确认机器人不在目标群，未执行退群。", False
             ok, err = await self.onebot.set_group_leave(event, group_id)
 
         elif action == "join_group":
@@ -1991,7 +2045,17 @@ class IdentityGuardianPlugin(Star):
             group_id_str, target_id or event.get_sender_id(), action
         )
 
-        actor = await self._get_actor(event, target_id)
+        actor = await (
+            self._get_control_actor(event, target_id)
+            if action in {"join_group", "leave_group"}
+            else self._get_actor(event, target_id)
+        )
+        if (
+            action == "leave_group"
+            and isinstance(actor, ActorContext)
+            and not actor.group_id
+        ):
+            actor = dataclasses.replace(actor, group_id=group_id_str)
         if actor:
             self.audit_log.write_from_decision(actor, decision, ok, err)
 
@@ -2132,17 +2196,20 @@ class IdentityGuardianPlugin(Star):
     async def leave_group(
         self,
         event: AstrMessageEvent,
+        group_id: str = "",
         intent: str = "uncertain",
         confidence: float = 0.0,
     ):
-        """发起退出当前群的请求。
+        """发起退出目标群的请求。
 
-        目标群由当前群聊事件绑定，不接受群号参数，也不支持解散群。
+        群聊中可省略 ``group_id``，默认使用当前群；私聊中必须传入目标 QQ
+        群号。真正调用平台前会查询 Bot 是否仍是该群成员，查询失败不会执行。
         这是机器人控制动作。先结合当前人格、上下文和语气判断主人是否认真
         要求退群：只有明确认真且置信度不低于 0.8 时才调用本工具；玩笑、
         试探或不确定时不要执行，应继续用自然语言回复或请求确认。
 
         Args:
+            group_id(string): 目标 QQ 群号；群内可留空，私聊必须填写
             intent(string): serious / joke / uncertain，由主链路结合上下文判断
             confidence(float): 主链路对 serious 判断的置信度，0 到 1
         """
@@ -2154,7 +2221,7 @@ class IdentityGuardianPlugin(Star):
         return await plugin._execute_with_guard(
             event,
             "leave_group",
-            {},
+            {"group_id": group_id} if str(group_id or "").strip() else {},
             trigger_source=TriggerSource.EXPLICIT_REQUEST.value,
         )
 

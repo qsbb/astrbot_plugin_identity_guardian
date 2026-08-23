@@ -360,7 +360,7 @@ natural 自然语言文案（都会真实调用 `push_llm_provider` 指定的 LL
 | `mute_member` | 禁言指定群成员。仅友好用户（主人 / 管理员）请求时可用 |
 | `unmute_member` | 解除指定群成员的禁言 |
 | `kick_member` | 踢出指定群成员。高风险操作，需人工确认 |
-| `leave_group` | 退出当前群。仅主人或 `control_admin_users` 中的控制管理员可请求；其请求直接执行，不进入普通审核；目标由当前事件绑定，不支持解散群 |
+| `leave_group` | 退出目标群。仅主人或 `control_admin_users` 中的控制管理员可请求；群内可省略群号使用当前群，私聊必须提供群号；执行前会查询 Bot 成员状态，不支持解散群 |
 | `delete_message` | 撤回一条群消息 |
 | `set_member_card` | 设置群成员名片。普通成员只能修改自己的名片 |
 | `set_group_name` | 修改群名称。需人工确认 |

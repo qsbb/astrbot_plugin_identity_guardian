@@ -599,18 +599,35 @@ def test_leave_group_authorizer_failure_fails_closed():
     assert decision.allowed is False
 
 
-def test_leave_group_rejects_external_target_or_dismiss_parameters():
+def test_leave_group_accepts_explicit_target_but_rejects_invalid_or_dismiss():
     engine = PolicyEngine(_make_config())
-    actor = _make_actor(requester_relation="friendly")
-    for params in ({"group_id": "999"}, {"is_dismiss": True}):
-        decision = engine.evaluate(
-            actor,
-            "leave_group",
-            params,
-            TriggerSource.EXPLICIT_REQUEST.value,
-        )
-        assert decision.allowed is False
-        assert "当前群事件绑定" in decision.reason
+    owner = _make_actor(requester_id="100", requester_relation="normal")
+    explicit = engine.evaluate(
+        owner,
+        "leave_group",
+        {"group_id": "999"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert explicit.allowed is True
+    assert explicit.params == {"group_id": "999"}
+
+    invalid = engine.evaluate(
+        owner,
+        "leave_group",
+        {"group_id": "not-a-group"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert invalid.allowed is False
+    assert "群号无效" in invalid.reason
+
+    dismissed = engine.evaluate(
+        owner,
+        "leave_group",
+        {"is_dismiss": True},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert dismissed.allowed is False
+    assert "解散群" in dismissed.reason
 
 
 def test_member_bot_set_member_card_on_self_is_rewritten():

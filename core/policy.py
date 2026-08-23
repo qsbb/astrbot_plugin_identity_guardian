@@ -76,7 +76,7 @@ class PolicyEngine:
 
         if "leave_group" in bot_caps:
             descriptions.append(
-                "只有主人或已映射的控制管理员可以对当前群发起退群请求；不能从消息正文指定其他群"
+                "只有主人或已映射的控制管理员可以发起退群请求；由你从请求中识别一个明确目标群号并传给 leave_group 的 group_id，群内也可传当前群，不能传猜测或多个群号"
             )
 
         if "join_group" in bot_caps:
@@ -416,12 +416,26 @@ class PolicyEngine:
         context: ActorContext,
         params: dict[str, Any],
     ) -> ActionDecision:
-        """检查退群授权：仅机器人主人/控制管理员，目标绑定当前群。"""
-        if "group_id" in params or "is_dismiss" in params:
+        """检查退群授权：仅主人/控制管理员，目标可来自当前群或显式群号。"""
+        if "is_dismiss" in params:
             return ActionDecision(
                 allowed=False,
                 action="leave_group",
-                reason="退群目标由当前群事件绑定，不接受外部群号或解散参数",
+                reason="不支持解散群参数",
+            )
+        group_id = str(params.get("group_id") or "").strip()
+        if group_id:
+            if not group_id.isdigit() or group_id == "0":
+                return ActionDecision(
+                    allowed=False,
+                    action="leave_group",
+                    reason="退群群号无效",
+                )
+        elif not str(context.group_id or "").strip():
+            return ActionDecision(
+                allowed=False,
+                action="leave_group",
+                reason="私聊退群必须提供目标群号",
             )
         if not self._owner_admin_authorized(context):
             return ActionDecision(
@@ -434,7 +448,7 @@ class PolicyEngine:
         return ActionDecision(
             allowed=True,
             action="leave_group",
-            params={},
+            params={"group_id": group_id} if group_id else {},
             requires_confirmation=False,
         )
 

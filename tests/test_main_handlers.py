@@ -131,6 +131,61 @@ def test_control_intent_requires_serious_label_and_bounded_confidence():
     assert checker("confirmed", 0.8) is True
 
 
+def test_private_control_message_receives_leave_boundary_prompt():
+    """私聊控制管理员也必须看见 leave_group 的主链路边界。"""
+    plugin = plugin_instance()
+    plugin.config = SimpleNamespace(enabled=True)
+    plugin._stopped = False
+    plugin.logger = SimpleNamespace(debug=lambda *args, **kwargs: None)
+    plugin._ensure_llm_caller = lambda: None
+    plugin._filter_tools_for_bot_role = lambda req, role: 0
+    plugin.policy = SimpleNamespace(
+        allowed_actions=lambda actor: ["只有控制管理员可以发起退群请求"]
+    )
+
+    async def get_control_actor(event, target_id=None):
+        return main.ActorContext(
+            bot_role="owner",
+            requester_id="9",
+            requester_role="owner",
+            requester_relation="owner",
+            bot_id="8",
+            group_id="",
+            platform_id="aiocqhttp",
+        )
+
+    plugin._get_control_actor = get_control_actor
+
+    class PrivateEvent:
+        @staticmethod
+        def get_platform_name():
+            return "aiocqhttp"
+
+        @staticmethod
+        def get_group_id():
+            return ""
+
+        @staticmethod
+        def get_self_id():
+            return "8"
+
+        @staticmethod
+        def get_sender_id():
+            return "9"
+
+        @staticmethod
+        def get_platform_id():
+            return "aiocqhttp"
+
+    req = SimpleNamespace(extra_user_content_parts=[])
+    asyncio.run(plugin.on_llm_request(PrivateEvent(), req))
+    text = "\n".join(
+        str(getattr(part, "text", "")) for part in req.extra_user_content_parts
+    )
+    assert "控制管理员" in text
+    assert "leave_group" in text
+
+
 def test_invitation_affinity_bridge_reads_inviter_not_target_group():
     plugin = plugin_instance()
     calls = []
@@ -645,7 +700,7 @@ def test_approval_failure_releases_entry_and_reports_real_reason():
     assert plugin.confirm.get(confirm_id) is None
 
 
-def test_leave_group_execution_is_bound_to_event_and_clears_identity_cache():
+def test_leave_group_execution_checks_membership_and_clears_identity_cache():
     plugin = plugin_instance()
     calls = []
     cleared = []
@@ -669,10 +724,17 @@ def test_leave_group_execution_is_bound_to_event_and_clears_identity_cache():
         calls.append((event.get_group_id(), group_id))
         return True, ""
 
+    async def member_info(bot, group_id, user_id, no_cache=False):
+        assert (group_id, user_id, no_cache) == (100, 8, True)
+        return {"user_id": user_id, "role": "member"}
+
     async def get_actor(event, target_id=None):
         return SimpleNamespace(group_id="100")
 
-    plugin.onebot = SimpleNamespace(set_group_leave=leave_group)
+    plugin.onebot = SimpleNamespace(
+        set_group_leave=leave_group,
+        get_group_member_info_for_bot=member_info,
+    )
     plugin.cooldown = SimpleNamespace(mark_action=lambda *args: None)
     plugin.identity = SimpleNamespace(clear_cache=lambda: cleared.append(True))
     plugin._get_actor = get_actor
@@ -691,41 +753,169 @@ def test_leave_group_execution_is_bound_to_event_and_clears_identity_cache():
     assert cleared == [True]
 
 
-def test_leave_group_tool_only_creates_confirmation_before_platform_call():
+def test_private_leave_group_uses_explicit_target_and_requires_membership():
+    plugin = plugin_instance()
+    calls = []
+    cleared = []
+
+    class PrivateEvent:
+        bot = object()
+
+        @staticmethod
+        def get_group_id():
+            return ""
+
+        @staticmethod
+        def get_sender_id():
+            return "9"
+
+        @staticmethod
+        def get_self_id():
+            return "8"
+
+    async def member_info(bot, group_id, user_id, no_cache=False):
+        return {"user_id": user_id}
+
+    async def leave_group(event, group_id):
+        calls.append(group_id)
+        return True, ""
+
+    async def get_actor(event, target_id=None):
+        return None
+
+    plugin.onebot = SimpleNamespace(
+        set_group_leave=leave_group,
+        get_group_member_info_for_bot=member_info,
+    )
+    plugin.cooldown = SimpleNamespace(mark_action=lambda *args: None)
+    plugin.identity = SimpleNamespace(clear_cache=lambda: cleared.append(True))
+    plugin._get_actor = get_actor
+    plugin.config = SimpleNamespace(is_control_admin=lambda uid: uid == "9")
+    plugin.audit_log = SimpleNamespace(write_from_decision=lambda *args: None)
+    decision = main.ActionDecision(
+        allowed=True,
+        action="leave_group",
+        params={"group_id": "806828355"},
+    )
+
+    result, ok = asyncio.run(
+        plugin._execute_action_result(PrivateEvent(), decision, None)
+    )
+    assert (result, ok) == ("已执行 leave_group。", True)
+    assert calls == [806828355]
+    assert cleared == [True]
+
+
+def test_private_leave_group_guard_passes_model_target_to_action():
+    """私聊由模型传入 group_id，序使用控制管理员回退而非当前群身份。"""
+    plugin = plugin_instance()
+    plugin._stopped = False
+    plugin.config = SimpleNamespace(
+        enable_api_guard=False,
+        is_control_admin=lambda uid: uid == "9",
+    )
+    plugin.cooldown = SimpleNamespace(check_breaker=lambda: False)
+    async def get_actor(event, target_id=None):
+        return None
+
+    plugin._get_actor = get_actor
+    plugin.policy = SimpleNamespace(
+        evaluate=lambda actor, action, params, source: main.ActionDecision(
+            allowed=True,
+            action=action,
+            params=params,
+        )
+    )
+    captured = {}
+
+    async def execute(event, decision, target_id):
+        captured["actor_group"] = decision.params.get("group_id")
+        return "已执行 leave_group。"
+
+    plugin._execute_action = execute
+
+    class PrivateEvent:
+        @staticmethod
+        def get_group_id():
+            return ""
+
+        @staticmethod
+        def get_sender_id():
+            return "9"
+
+        @staticmethod
+        def get_self_id():
+            return "8"
+
+        @staticmethod
+        def get_platform_id():
+            return "aiocqhttp"
+
+    result = asyncio.run(
+        plugin._execute_with_guard(
+            PrivateEvent(),
+            "leave_group",
+            {"group_id": "806828355"},
+            trigger_source=main.TriggerSource.EXPLICIT_REQUEST.value,
+        )
+    )
+    assert result == "已执行 leave_group。"
+    assert captured == {"actor_group": "806828355"}
+
+
+def test_leave_group_membership_failure_never_calls_platform_leave():
+    plugin = plugin_instance()
+    calls = []
+
+    class Event:
+        bot = object()
+
+        @staticmethod
+        def get_group_id():
+            return ""
+
+        @staticmethod
+        def get_self_id():
+            return "8"
+
+    async def member_info(*args, **kwargs):
+        return None
+
+    async def group_list(*args, **kwargs):
+        return None
+
+    async def leave(*args, **kwargs):
+        calls.append(True)
+        return True, ""
+
+    plugin.onebot = SimpleNamespace(
+        get_group_member_info_for_bot=member_info,
+        get_group_list=group_list,
+        set_group_leave=leave,
+    )
+    decision = main.ActionDecision(
+        allowed=True,
+        action="leave_group",
+        params={"group_id": "806828355"},
+    )
+    result, ok = asyncio.run(
+        plugin._execute_action_result(Event(), decision, None)
+    )
+    assert ok is False
+    assert "无法确认" in result
+    assert calls == []
+
+
+def test_leave_group_tool_requires_serious_intent_before_platform_call():
     plugin = plugin_instance()
     plugin._stopped = False
     plugin.config = SimpleNamespace(enable_api_guard=False)
     plugin.cooldown = SimpleNamespace(check_breaker=lambda: False)
     plugin.confirm = main.ConfirmService()
-    plugin.policy = SimpleNamespace(
-        evaluate=lambda *args: main.ActionDecision(
-            allowed=True,
-            action="leave_group",
-            params={},
-            requires_confirmation=True,
-        )
-    )
-
-    async def get_actor(event, target_id=None):
-        return SimpleNamespace(group_id="100", requester_id="9")
-
-    async def should_not_leave(*args):
-        raise AssertionError("退群必须先人工确认")
-
-    plugin._get_actor = get_actor
-    plugin._execute_action_result = should_not_leave
     result = asyncio.run(
-        plugin._execute_with_guard(
-            ApprovalEvent("100"),
-            "leave_group",
-            {},
-            trigger_source=main.TriggerSource.EXPLICIT_REQUEST.value,
-        )
+        plugin.leave_group(ApprovalEvent("100"), intent="joke", confidence=1.0)
     )
-    assert "人工确认" in result
-    pending = plugin.confirm.list_pending()
-    assert len(pending) == 1
-    assert pending[0].action == "leave_group"
+    assert "没有执行退群" in result
 
 
 def test_concurrent_approval_executes_platform_action_only_once():
