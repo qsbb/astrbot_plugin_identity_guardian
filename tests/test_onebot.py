@@ -165,3 +165,36 @@ def test_send_group_message_keeps_legacy_signature():
     event = SimpleNamespace(bot=_Bot({"message_id": 12345}))
     ok, err = asyncio.run(OneBotClient().send_group_message(event, 10001, "通知"))
     assert (ok, err) == (True, "")
+
+
+def test_request_group_add_uses_explicit_adapter_extension():
+    class Adapter:
+        def __init__(self):
+            self.calls = []
+
+        async def request_group_add(self, **params):
+            self.calls.append(params)
+            return {"wording": "submitted"}
+
+    bot = Adapter()
+    ok, detail = asyncio.run(
+        OneBotClient().request_group_add_for_bot(
+            bot, 10001, message="申请加入", answer="溪流"
+        )
+    )
+    assert (ok, detail) == (True, "submitted")
+    assert bot.calls == [
+        {"group_id": 10001, "message": "申请加入", "answer": "溪流"}
+    ]
+
+
+def test_request_group_add_fails_closed_without_adapter_extension():
+    class CallActionOnly:
+        async def call_action(self, action, **params):
+            raise AssertionError(f"must not guess OneBot action: {action}")
+
+    ok, detail = asyncio.run(
+        OneBotClient().request_group_add_for_bot(CallActionOnly(), 10001)
+    )
+    assert ok is False
+    assert detail == "request_group_add unsupported by adapter"

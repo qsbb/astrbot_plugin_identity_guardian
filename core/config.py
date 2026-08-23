@@ -37,6 +37,7 @@ def _coerce_config(config: Any) -> dict[str, Any]:
 _DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "owner_users": [],
+    "control_admin_users": [],
     "quest_session_owner_bindings": [],
     "quest_session_read_only_bindings": [],
     "friendly_users": [],
@@ -63,6 +64,8 @@ _DEFAULTS: dict[str, Any] = {
     "proactive_delivery_targets": [],
     "push_llm_provider": "",
     "pending_ttl_hours": 24,
+    "invitation_affinity_threshold": 80.0,
+    "invitation_without_relationship_policy": "reject",
     "cross_group_violation": False,
     "enable_set_admin_revoke": False,
     "welcome_bot_speak": False,
@@ -120,6 +123,7 @@ class Config:
         # 对 list 类型做正确解析
         for key in (
             "owner_users",
+            "control_admin_users",
             "quest_session_owner_bindings",
             "quest_session_read_only_bindings",
             "friendly_users",
@@ -143,6 +147,11 @@ class Config:
     @property
     def owner_users(self) -> list[str]:
         return [str(x) for x in self._raw.get("owner_users", [])]
+
+    @property
+    def control_admin_users(self) -> list[str]:
+        """QQ IDs explicitly mapped to the series control administrator role."""
+        return [str(x) for x in self._raw.get("control_admin_users", [])]
 
     @property
     def quest_session_owner_bindings(self) -> list[str]:
@@ -293,6 +302,17 @@ class Config:
         return _parse_int(self._raw.get("pending_ttl_hours"), 24, minimum=1)
 
     @property
+    def invitation_affinity_threshold(self) -> float:
+        return max(0.0, min(100.0, _parse_float(
+            self._raw.get("invitation_affinity_threshold"), 80.0
+        )))
+
+    @property
+    def invitation_without_relationship_policy(self) -> str:
+        value = str(self._raw.get("invitation_without_relationship_policy", "reject")).strip().casefold()
+        return value if value in {"approve", "reject"} else "reject"
+
+    @property
     def cross_group_violation(self) -> bool:
         return _parse_bool(self._raw.get("cross_group_violation"), False)
 
@@ -331,6 +351,11 @@ class Config:
     def is_owner(self, user_id: str) -> bool:
         """判断用户是否是 bot 主人。"""
         return str(user_id) in self.owner_users
+
+    def is_control_admin(self, user_id: str) -> bool:
+        """Return whether a user is an owner or explicitly mapped control admin."""
+        uid = str(user_id)
+        return uid in self.owner_users or uid in self.control_admin_users
 
     def is_friendly(self, user_id: str) -> bool:
         """判断用户是否是友好用户（主人或额外友好列表）。"""

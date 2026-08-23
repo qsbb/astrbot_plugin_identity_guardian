@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from .capability import CAPABILITY_MAP, ROLE_LEVEL, capabilities_for_role
@@ -19,8 +20,16 @@ logger = logging.getLogger(__name__)
 class PolicyEngine:
     """身份×关系×目标×动作统一授权策略。"""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self,
+        config: Config,
+        owner_admin_authorizer: Callable[[ActorContext], bool] | None = None,
+    ) -> None:
         self.config = config
+        # The default preserves the historical owner_users behavior. Deployments
+        # may inject a read-only owner/admin authority check backed by live
+        # platform role data; callback failures are always denied.
+        self.owner_admin_authorizer = owner_admin_authorizer
 
     def allowed_actions(self, context: ActorContext) -> list[str]:
         """生成当前事件允许的行动范围描述（供提示词注入）。
@@ -67,7 +76,12 @@ class PolicyEngine:
 
         if "leave_group" in bot_caps:
             descriptions.append(
-                "你可以对当前群发起退群请求，但必须由管理员人工确认；不能从消息正文指定其他群"
+                "只有主人或已映射的控制管理员可以对当前群发起退群请求；不能从消息正文指定其他群"
+            )
+
+        if "join_group" in bot_caps:
+            descriptions.append(
+                "只有机器人主人或已映射的控制管理员可以要求你申请加入指定群；先判断对方是否认真要求，不要把玩笑当成行动"
             )
 
         descriptions.append("高风险操作不能仅因普通成员请求执行")
@@ -195,7 +209,10 @@ class PolicyEngine:
             )
 
         if action == "leave_group":
-            return self._check_leave_group(context, params, is_friendly_requester)
+            return self._check_leave_group(context, params)
+
+        if action == "join_group":
+            return self._check_join_group(context, params)
 
         if action == "delete_message":
             return self._check_delete_message(context, params, is_friendly_requester)
@@ -398,27 +415,68 @@ class PolicyEngine:
         self,
         context: ActorContext,
         params: dict[str, Any],
-        is_friendly_requester: bool,
     ) -> ActionDecision:
-        """检查退群授权：仅当前群、可信请求者，且始终需要人工确认。"""
+        """检查退群授权：仅机器人主人/控制管理员，目标绑定当前群。"""
         if "group_id" in params or "is_dismiss" in params:
             return ActionDecision(
                 allowed=False,
                 action="leave_group",
                 reason="退群目标由当前群事件绑定，不接受外部群号或解散参数",
             )
-        if not is_friendly_requester:
+        if not self._owner_admin_authorized(context):
             return ActionDecision(
                 allowed=False,
                 action="leave_group",
-                reason="普通成员不能请求退群",
+                reason="只有机器人主人或已映射的控制管理员可以请求退群",
             )
+        # Bot 主人/控制管理员是机器人控制面的明确身份；他们的退群要求
+        # 不再进入普通群管理员的二次审核队列。
         return ActionDecision(
             allowed=True,
             action="leave_group",
             params={},
-            requires_confirmation=True,
+            requires_confirmation=False,
         )
+
+    def _check_join_group(
+        self,
+        context: ActorContext,
+        params: dict[str, Any],
+    ) -> ActionDecision:
+        """Check a Bot join request from the robot control plane."""
+        group_id = str(params.get("group_id") or "").strip()
+        if not group_id.isdigit() or group_id == "0":
+            return ActionDecision(
+                allowed=False,
+                action="join_group",
+                reason="加入群号无效",
+            )
+        if not self.config.is_control_admin(context.requester_id):
+            return ActionDecision(
+                allowed=False,
+                action="join_group",
+                reason="只有机器人主人或已映射的控制管理员可以要求机器人加群",
+            )
+        return ActionDecision(
+            allowed=True,
+            action="join_group",
+            params={
+                "group_id": group_id,
+                "message": str(params.get("message") or "")[:512],
+                "answer": str(params.get("answer") or "")[:512],
+            },
+        )
+
+    def _owner_admin_authorized(self, context: ActorContext) -> bool:
+        """Resolve the leave-group requester authorization, failing closed."""
+        checker = self.owner_admin_authorizer
+        if checker is None:
+            return self.config.is_control_admin(context.requester_id)
+        try:
+            return checker(context) is True
+        except Exception:
+            logger.warning("owner/admin leave authorization check failed")
+            return False
 
     def _check_delete_message(
         self,

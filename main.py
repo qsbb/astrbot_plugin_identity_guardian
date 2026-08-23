@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import json
+import math
 import pathlib
 from typing import Any
 
@@ -205,6 +207,11 @@ class IdentityGuardianPlugin(Star):
             self.join_review_store,
             # Page 入群审批必须经过与消息路径一致的紧急停止/熔断护栏。
             guard=self._check_guard,
+            invitation_affinity_reader=self._read_invitation_affinity,
+            invitation_relationship_available=self._invitation_relationship_available,
+            control_admin_checker=self.config.is_control_admin,
+            invitation_affinity_threshold=self.config.invitation_affinity_threshold,
+            invitation_without_relationship_policy=self.config.invitation_without_relationship_policy,
         )
         self.join_review_page_api = JoinReviewPageAPI(
             context=self.context,
@@ -250,6 +257,72 @@ class IdentityGuardianPlugin(Star):
                 "moderation_enabled": self.config.auto_moderate,
                 "api_guard_enabled": self.config.enable_api_guard,
             },
+        )
+
+    async def _read_invitation_affinity(
+        self,
+        platform_id: str,
+        group_id: str,
+        inviter_id: str = "",
+        bot_id: str = "",
+    ) -> float | None:
+        """Read the inviter's user affinity from 情 without granting rights.
+
+        ``group_id`` remains in the shared reader signature for compatibility,
+        but the target group is deliberately ignored. The threshold belongs to
+        the inviting person's relationship with the Bot.
+        """
+        del group_id
+        getter = getattr(self.context, "get_star_instance", None)
+        if not callable(getter):
+            return None
+        try:
+            relationship = getter("astrbot_plugin_relationship")
+        except Exception:
+            return None
+        if relationship is None:
+            return None
+        contract_getter = getattr(relationship, "invitation_affinity_contract", None)
+        snapshot_getter = getattr(relationship, "get_invitation_affinity", None)
+        if not callable(contract_getter) or not callable(snapshot_getter):
+            return None
+        try:
+            contract = contract_getter()
+            if (
+                not isinstance(contract, dict)
+                or contract.get("name") != "relationship.invitation_affinity"
+                or str(contract.get("version", "")).split(".", 1)[0] != "1"
+                or contract.get("browser_exposed") is not False
+                or contract.get("permission_grant") is not False
+            ):
+                return None
+            value = snapshot_getter(
+                str(bot_id or ""),
+                str(inviter_id or ""),
+                platform_id=str(platform_id or ""),
+            )
+            if inspect.isawaitable(value):
+                value = await value
+            if not isinstance(value, dict) or value.get("status") != "available":
+                return None
+            score = value.get("affinity")
+            if isinstance(score, bool):
+                return None
+            score = float(score)
+            return score if math.isfinite(score) else None
+        except Exception:
+            return None
+
+    def _invitation_relationship_available(self) -> bool:
+        getter = getattr(self.context, "get_star_instance", None)
+        if not callable(getter):
+            return False
+        try:
+            relationship = getter("astrbot_plugin_relationship")
+        except Exception:
+            return False
+        return callable(getattr(relationship, "get_invitation_affinity", None)) and callable(
+            getattr(relationship, "invitation_affinity_contract", None)
         )
 
     def plugin_health(self) -> dict[str, object]:
@@ -1287,6 +1360,30 @@ class IdentityGuardianPlugin(Star):
             self.logger.debug("%s _get_actor failed: %s", LOG_PREFIX, exc)
             return None
 
+    async def _get_control_actor(
+        self, event: AstrMessageEvent, target_id: str | None = None
+    ) -> ActorContext | None:
+        """Resolve a control-admin actor even for a private control message."""
+        actor = await self._get_actor(event, target_id)
+        if actor is not None:
+            return actor
+        try:
+            requester_id = str(event.get_sender_id() or "")
+            if not self.config.is_control_admin(requester_id):
+                return None
+            return ActorContext(
+                bot_role="owner",
+                requester_id=requester_id,
+                requester_role="owner",
+                requester_relation="owner",
+                bot_id=str(event.get_self_id() or ""),
+                target_id=target_id,
+                group_id="",
+                platform_id=str(event.get_platform_id() or ""),
+            )
+        except Exception:
+            return None
+
     def _check_guard(self) -> bool:
         """检查 API 层护栏。"""
         if bool(getattr(self, "_stopped", False)):
@@ -1305,6 +1402,20 @@ class IdentityGuardianPlugin(Star):
             return False
         return True
 
+    @staticmethod
+    def _control_intent_is_serious(intent: Any, confidence: Any) -> bool:
+        """Require an explicit main-chain serious decision before side effects."""
+        normalized = str(intent or "").strip().casefold()
+        try:
+            score = float(confidence)
+        except (TypeError, ValueError):
+            return False
+        return (
+            normalized in {"serious", "confirmed"}
+            and math.isfinite(score)
+            and 0.8 <= score <= 1.0
+        )
+
     async def _execute_with_guard(
         self,
         event: AstrMessageEvent,
@@ -1317,7 +1428,11 @@ class IdentityGuardianPlugin(Star):
         if not self._check_guard():
             return "操作已被安全护栏拦截（紧急停止或熔断）。"
 
-        actor = await self._get_actor(event, target_id)
+        actor = await (
+            self._get_control_actor(event, target_id)
+            if action in {"join_group"}
+            else self._get_actor(event, target_id)
+        )
         if actor is None:
             return "无法获取身份上下文。"
 
@@ -1760,10 +1875,13 @@ class IdentityGuardianPlugin(Star):
         params = decision.params
         group_id_str = event.get_group_id()
 
-        try:
-            group_id = int(group_id_str)
-        except (ValueError, TypeError):
-            return "群 ID 无效。", False
+        if action == "join_group":
+            group_id = 0
+        else:
+            try:
+                group_id = int(group_id_str)
+            except (ValueError, TypeError):
+                return "群 ID 无效。", False
 
         ok = False
         err = ""
@@ -1807,6 +1925,17 @@ class IdentityGuardianPlugin(Star):
 
         elif action == "leave_group":
             ok, err = await self.onebot.set_group_leave(event, group_id)
+
+        elif action == "join_group":
+            requested_group_id = str(params.get("group_id") or "").strip()
+            if not requested_group_id.isdigit() or requested_group_id == "0":
+                return "加入群号无效。", False
+            ok, err = await self.onebot.request_group_add_for_bot(
+                getattr(event, "bot", None),
+                int(requested_group_id),
+                message=str(params.get("message") or ""),
+                answer=str(params.get("answer") or ""),
+            )
 
         elif action == "delete_message":
             msg_id = int(params.get("message_id", 0))
@@ -2000,19 +2129,72 @@ class IdentityGuardianPlugin(Star):
         )
 
     @filter.llm_tool(name="leave_group")
-    async def leave_group(self, event: AstrMessageEvent):
+    async def leave_group(
+        self,
+        event: AstrMessageEvent,
+        intent: str = "uncertain",
+        confidence: float = 0.0,
+    ):
         """发起退出当前群的请求。
 
         目标群由当前群聊事件绑定，不接受群号参数，也不支持解散群。
-        这是高风险操作，即使策略允许也只会创建人工确认单。
+        这是机器人控制动作。先结合当前人格、上下文和语气判断主人是否认真
+        要求退群：只有明确认真且置信度不低于 0.8 时才调用本工具；玩笑、
+        试探或不确定时不要执行，应继续用自然语言回复或请求确认。
+
+        Args:
+            intent(string): serious / joke / uncertain，由主链路结合上下文判断
+            confidence(float): 主链路对 serious 判断的置信度，0 到 1
         """
         plugin = IdentityGuardianPlugin._current_instance or self
         if not isinstance(plugin, IdentityGuardianPlugin):
             return "插件初始化中，请稍后重试。"
+        if not plugin._control_intent_is_serious(intent, confidence):
+            return "我判断这句话还不能确认是认真的退群要求，所以没有执行退群。"
         return await plugin._execute_with_guard(
             event,
             "leave_group",
             {},
+            trigger_source=TriggerSource.EXPLICIT_REQUEST.value,
+        )
+
+    @filter.llm_tool(name="join_group")
+    async def join_group(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        intent: str = "uncertain",
+        confidence: float = 0.0,
+        message: str = "",
+        answer: str = "",
+    ):
+        """代表机器人申请加入指定 QQ 群。
+
+        这是机器人控制动作，只能由主人或 control_admin_users 发起。先由
+        主链路结合人格、上下文和语气判断是否为认真要求；玩笑、举例、
+        试探或不确定时不要调用。标准 OneBot V11 没有统一加群 API，若当前
+        适配器没有明确暴露加群扩展，会返回不支持，不会伪造平台结果。
+
+        Args:
+            group_id(string): 目标 QQ 群号
+            intent(string): serious / joke / uncertain，由主链路判断
+            confidence(float): 主链路对 serious 判断的置信度，0 到 1
+            message(string): 可选的入群申请说明
+            answer(string): 已知且确认的入群问题答案；不知道时留空
+        """
+        plugin = IdentityGuardianPlugin._current_instance or self
+        if not isinstance(plugin, IdentityGuardianPlugin):
+            return "插件初始化中，请稍后重试。"
+        if not plugin._control_intent_is_serious(intent, confidence):
+            return "我判断这句话还不能确认是认真的加群要求，所以没有提交申请。"
+        return await plugin._execute_with_guard(
+            event,
+            "join_group",
+            {
+                "group_id": group_id,
+                "message": message,
+                "answer": answer,
+            },
             trigger_source=TriggerSource.EXPLICIT_REQUEST.value,
         )
 

@@ -16,6 +16,26 @@
     },
     "hint": "用于平台消息中的主人关系判断，不接受自然人 ID 或聊天文本自称。使用凝心溯溪-临时，建议在临的管理页一次完成 Quest 身份绑定；此处仅保留独立使用序时的兼容配置。"
   },
+  "control_admin_users": {
+    "description": "[机器人控制] 可直接控制机器人加群/退群的管理员 QQ 号列表",
+    "type": "list",
+    "default": [],
+    "items": {"type": "string"},
+    "hint": "这些是机器人的控制管理员，不是目标群管理员。其邀请 Bot 入群或要求 Bot 退群时无需普通审核；不会把普通群管理员自动提升为控制管理员。"
+  },
+  "invitation_affinity_threshold": {
+    "description": "[邀请 Bot] 自动接受所需的邀请人好感度",
+    "type": "float",
+    "default": 80.0,
+    "hint": "安装情时，邀请人对 Bot 的好感低于此值不会自动接受 Bot 入群邀请；仅影响自动接受，不影响页面人工同意。"
+  },
+  "invitation_without_relationship_policy": {
+    "description": "[邀请 Bot] 未安装情时的自动处理",
+    "type": "string",
+    "default": "reject",
+    "options": ["approve", "reject"],
+    "hint": "未安装情时不读取好感度，统一按此设置自动接受或自动拒绝；页面人工同意不受影响。"
+  },
   "quest_session_owner_bindings": {
     "description": "[兼容] Quest 私聊主人身份精确绑定（建议在临中管理）",
     "type": "list",

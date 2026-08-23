@@ -22,6 +22,8 @@ def test_defaults():
     assert cfg.auto_moderate is False
     assert cfg.enable_api_guard is True
     assert cfg.proactive_delivery_targets == []
+    assert cfg.invitation_affinity_threshold == 80.0
+    assert cfg.invitation_without_relationship_policy == "reject"
 
 
 def test_list_parsing():
@@ -86,6 +88,22 @@ def test_helper_methods():
     assert cfg.is_protected("222") is True
     assert cfg.is_protected("111") is False
     assert cfg.is_friendly("111") is True
+
+
+def test_control_admin_and_invitation_settings():
+    cfg = Config(
+        {
+            "owner_users": ["111"],
+            "control_admin_users": ["222"],
+            "invitation_affinity_threshold": 72.5,
+            "invitation_without_relationship_policy": "approve",
+        }
+    )
+    assert cfg.is_control_admin("111") is True
+    assert cfg.is_control_admin("222") is True
+    assert cfg.is_control_admin("333") is False
+    assert cfg.invitation_affinity_threshold == 72.5
+    assert cfg.invitation_without_relationship_policy == "approve"
 
 
 def test_coerce_from_object():

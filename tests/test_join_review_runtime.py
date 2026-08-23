@@ -98,12 +98,18 @@ def audit_result(*, approved: bool = False, error: str = "") -> AutoAuditResult:
     )
 
 
-def make_runtime(tmp_path, result=None):
+def make_runtime(tmp_path, result=None, *, affinity_reader=None):
     bot = Bot()
     onebot = OneBotClient()
     store = JoinReviewStore(tmp_path)
     audit = Audit(result or audit_result())
-    runtime = JoinReviewRuntime(audit, onebot, store)
+    runtime = JoinReviewRuntime(
+        audit,
+        onebot,
+        store,
+        invitation_affinity_reader=affinity_reader or (lambda *_args: 80.0),
+        invitation_relationship_available=lambda: True,
+    )
     return runtime, store, audit, Event(bot), bot
 
 
@@ -151,7 +157,9 @@ def test_send_only_skips_auto_audit_and_queues(tmp_path):
 
 
 def test_invitation_requires_target_registration_and_skips_audit(tmp_path):
-    runtime, store, audit, event, bot = make_runtime(tmp_path)
+    runtime, store, audit, event, bot = make_runtime(
+        tmp_path, affinity_reader=lambda *_args: 0.0
+    )
     invite = raw_request(sub_type="invite", comment="")
     ignored = run(runtime.handle_event(event, invite))
     assert ignored.outcome == "ignored"
@@ -166,10 +174,66 @@ def test_invitation_requires_target_registration_and_skips_audit(tmp_path):
     assert result.request is not None
     assert result.request.sub_type == "invite"
     assert audit.calls == 0
-    assert not any(action in {"send_group_msg", "get_group_member_info"} for action, _ in bot.calls)
+    assert not any(action == "send_group_msg" for action, _ in bot.calls)
 
 
-def test_invitation_approval_forwards_invite_subtype_without_group_role_lookup(tmp_path):
+def test_invitation_threshold_auto_approves(tmp_path):
+    runtime, store, _, event, bot = make_runtime(tmp_path)
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+
+    result = run(runtime.handle_event(event, raw_request(sub_type="invite", comment="")))
+
+    assert result.outcome == "auto_approved"
+    assert result.request is not None and result.request.status == "approved"
+    action = next(item for item in bot.calls if item[0] == "set_group_add_request")
+    assert action[1]["sub_type"] == "invite"
+    assert action[1]["approve"] is True
+    assert not any(name == "get_group_member_info" for name, _ in bot.calls)
+
+
+def test_invitation_affinity_threshold_auto_approves_without_role(tmp_path):
+    async def affinity(platform_id, group_id, user_id):
+        assert (platform_id, group_id, user_id) == ("qq-main", "100", "200")
+        return 80
+
+    runtime, store, _, event, bot = make_runtime(
+        tmp_path, affinity_reader=affinity
+    )
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+
+    result = run(runtime.handle_event(event, raw_request(sub_type="invite", comment="")))
+
+    assert result.outcome == "auto_approved"
+    assert any(action == "set_group_add_request" for action, _ in bot.calls)
+
+
+@pytest.mark.parametrize("value", [79.99, None, float("nan"), "not-a-score"])
+def test_invitation_untrusted_or_unavailable_affinity_stays_pending(tmp_path, value):
+    def affinity(*_args):
+        return value
+
+    runtime, store, _, event, bot = make_runtime(tmp_path, affinity_reader=affinity)
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+
+    result = run(runtime.handle_event(event, raw_request(sub_type="invite", comment="")))
+
+    assert result.outcome == "pending_invitation"
+    assert result.request is not None and result.request.status == "pending"
+    assert not any(action == "set_group_add_request" for action, _ in bot.calls)
+
+
+def test_invitation_below_threshold_stays_pending(tmp_path):
+    runtime, store, _, event, bot = make_runtime(
+        tmp_path, affinity_reader=lambda *_args: 79.99
+    )
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+
+    result = run(runtime.handle_event(event, raw_request(sub_type="invite", comment="")))
+
+    assert result.outcome == "pending_invitation"
+
+
+def test_invitation_manual_approval_does_not_query_group_membership(tmp_path):
     runtime, store, _, event, bot = make_runtime(tmp_path)
     run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
     request = run(
@@ -187,7 +251,106 @@ def test_invitation_approval_forwards_invite_subtype_without_group_role_lookup(t
     action = next(item for item in bot.calls if item[0] == "set_group_add_request")
     assert action[1]["sub_type"] == "invite"
     assert action[1]["approve"] is True
-    assert not any(action_name == "get_group_member_info" for action_name, _ in bot.calls)
+    assert not any(name == "get_group_member_info" for name, _ in bot.calls)
+
+
+def test_invitation_manual_approval_ignores_group_relationship_gate(tmp_path):
+    runtime, store, _, event, bot = make_runtime(tmp_path)
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+    request = run(
+        runtime._store_request(
+            parse_join_request(event, raw_request(sub_type="invite", comment=""))
+        )
+    )
+    context = SimpleNamespace(
+        get_platform_inst=lambda platform_id: (
+            SimpleNamespace(
+                get_client=lambda: bot,
+                meta=lambda: SimpleNamespace(id="qq-main", name="aiocqhttp"),
+            )
+            if platform_id == "qq-main"
+            else None
+        ),
+        platform_manager=SimpleNamespace(get_insts=lambda: []),
+    )
+    # 自动门禁不影响页面人工同意；人工操作只校验平台申请本身。
+    updated = run(runtime.process_request(context, request.request_id, approve=True))
+    assert updated.status == "approved"
+    assert any(action_name == "set_group_add_request" for action_name, _ in bot.calls)
+    assert not any(name == "get_group_member_info" for name, _ in bot.calls)
+
+
+def test_control_admin_manual_retry_does_not_require_target_registration(tmp_path):
+    runtime, _, _, event, bot = make_runtime(tmp_path, affinity_reader=lambda *_args: 0.0)
+    runtime.control_admin_checker = lambda user_id: user_id == "200"
+    request = run(
+        runtime._store_request(
+            parse_join_request(event, raw_request(sub_type="invite", comment=""))
+        )
+    )
+    context = SimpleNamespace(
+        get_platform_inst=lambda platform_id: (
+            SimpleNamespace(
+                get_client=lambda: bot,
+                meta=lambda: SimpleNamespace(id="qq-main", name="aiocqhttp"),
+            )
+            if platform_id == "qq-main"
+            else None
+        ),
+        platform_manager=SimpleNamespace(get_insts=lambda: []),
+    )
+
+    updated = run(runtime.process_request(context, request.request_id, approve=True))
+
+    assert updated.status == "approved"
+
+
+def test_control_admin_invitation_bypasses_group_gate(tmp_path):
+    runtime, store, _, event, bot = make_runtime(
+        tmp_path, affinity_reader=lambda *_args: 0.0
+    )
+    runtime.control_admin_checker = lambda user_id: user_id == "200"
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+
+    result = run(runtime.handle_event(event, raw_request(sub_type="invite", comment="")))
+
+    assert result.outcome == "auto_approved"
+
+
+def test_control_admin_invitation_does_not_need_target_registration(tmp_path):
+    runtime, _, _, event, _ = make_runtime(tmp_path, affinity_reader=lambda *_args: 0.0)
+    runtime.control_admin_checker = lambda user_id: user_id == "200"
+
+    result = run(runtime.handle_event(event, raw_request(sub_type="invite", comment="")))
+
+    assert result.outcome == "auto_approved"
+
+
+def test_without_relationship_uses_explicit_fallback(tmp_path):
+    runtime, store, _, event, bot = make_runtime(tmp_path)
+    runtime.invitation_relationship_available = lambda: False
+    runtime.invitation_without_relationship_policy = "approve"
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+
+    result = run(runtime.handle_event(event, raw_request(sub_type="invite", comment="")))
+
+    assert result.outcome == "auto_approved"
+    action = next(item for item in bot.calls if item[0] == "set_group_add_request")
+    assert action[1]["approve"] is True
+
+
+def test_without_relationship_reject_fallback_submits_platform_rejection(tmp_path):
+    runtime, store, _, event, bot = make_runtime(tmp_path)
+    runtime.invitation_relationship_available = lambda: False
+    runtime.invitation_without_relationship_policy = "reject"
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+
+    result = run(runtime.handle_event(event, raw_request(sub_type="invite", comment="")))
+
+    assert result.outcome == "auto_rejected"
+    assert result.request is not None and result.request.status == "rejected"
+    action = next(item for item in bot.calls if item[0] == "set_group_add_request")
+    assert action[1]["approve"] is False
 
 
 def test_both_enabled_stops_only_after_platform_approval(tmp_path):

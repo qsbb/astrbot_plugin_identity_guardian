@@ -486,7 +486,42 @@ def test_member_bot_can_set_self_card():
 def test_leave_group_requires_trusted_requester_and_confirmation():
     cfg = _make_config()
     engine = PolicyEngine(cfg)
-    actor = _make_actor(requester_relation="friendly")
+    # A normal group admin is friendly for conversation purposes, but must
+    # not be allowed to request the destructive leave action by default.
+    actor = _make_actor(
+        requester_id="999",
+        requester_role="admin",
+        requester_relation="friendly",
+    )
+    decision = engine.evaluate(
+        actor,
+        "leave_group",
+        {},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+    assert "控制管理员" in decision.reason
+
+    owner = engine.evaluate(
+        _make_actor(requester_id="100", requester_relation="normal"),
+        "leave_group",
+        {},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert owner.allowed is True
+    assert owner.requires_confirmation is False
+    assert owner.params == {}
+
+
+def test_leave_group_accepts_injected_owner_admin_authorizer():
+    actor = _make_actor(
+        requester_id="999",
+        requester_role="admin",
+        requester_relation="friendly",
+    )
+    engine = PolicyEngine(_make_config(), owner_admin_authorizer=lambda value: (
+        value.requester_role == "admin"
+    ))
     decision = engine.evaluate(
         actor,
         "leave_group",
@@ -494,17 +529,74 @@ def test_leave_group_requires_trusted_requester_and_confirmation():
         TriggerSource.EXPLICIT_REQUEST.value,
     )
     assert decision.allowed is True
-    assert decision.requires_confirmation is True
-    assert decision.params == {}
+    assert decision.requires_confirmation is False
 
-    ordinary = engine.evaluate(
-        _make_actor(requester_relation="normal"),
+
+def test_control_admin_can_leave_without_confirmation():
+    actor = _make_actor(requester_id="777", requester_relation="normal")
+    decision = PolicyEngine(
+        _make_config(control_admin_users=["777"])
+    ).evaluate(
+        actor,
         "leave_group",
         {},
         TriggerSource.EXPLICIT_REQUEST.value,
     )
+    assert decision.allowed is True
+    assert decision.requires_confirmation is False
+
+
+def test_only_control_admin_can_request_join_group():
+    ordinary = PolicyEngine(_make_config()).evaluate(
+        _make_actor(requester_id="999"),
+        "join_group",
+        {"group_id": "123456"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
     assert ordinary.allowed is False
-    assert "普通成员" in ordinary.reason
+    assert "控制管理员" in ordinary.reason
+
+    control_admin = PolicyEngine(
+        _make_config(control_admin_users=["777"])
+    ).evaluate(
+        _make_actor(requester_id="777"),
+        "join_group",
+        {"group_id": "123456", "message": "申请", "answer": "答案"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert control_admin.allowed is True
+    assert control_admin.requires_confirmation is False
+    assert control_admin.params == {
+        "group_id": "123456",
+        "message": "申请",
+        "answer": "答案",
+    }
+
+
+def test_join_group_rejects_invalid_group_id():
+    decision = PolicyEngine(_make_config(control_admin_users=["777"])).evaluate(
+        _make_actor(requester_id="777"),
+        "join_group",
+        {"group_id": "not-a-group"},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+    assert "群号无效" in decision.reason
+
+
+def test_leave_group_authorizer_failure_fails_closed():
+    def broken(_context):
+        raise RuntimeError("role service unavailable")
+
+    decision = PolicyEngine(
+        _make_config(), owner_admin_authorizer=broken
+    ).evaluate(
+        _make_actor(requester_id="100", requester_role="owner"),
+        "leave_group",
+        {},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
 
 
 def test_leave_group_rejects_external_target_or_dismiss_parameters():

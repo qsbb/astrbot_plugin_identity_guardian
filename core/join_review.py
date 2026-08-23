@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -15,6 +17,7 @@ from .join_review_store import (
     FINAL_STATUSES,
     JoinRequest,
     JoinReviewStore,
+    RequestNotActionable,
     ValidationError,
     normalize_platform_id,
     normalize_qq_id,
@@ -26,6 +29,9 @@ from .request_push import resolve_push_targets
 MAX_EVENT_TEXT = 2048
 MAX_NICKNAME = 128
 MAX_LEVEL = 64
+INVITATION_AFFINITY_THRESHOLD = 80.0
+
+InvitationAffinityReader = Callable[..., Any]
 
 
 class GuardBlockedError(RuntimeError):
@@ -128,6 +134,11 @@ class JoinReviewRuntime:
         store: JoinReviewStore,
         notification: JoinNotificationService | None = None,
         guard: Callable[[], bool] | None = None,
+        invitation_affinity_reader: InvitationAffinityReader | None = None,
+        invitation_relationship_available: Callable[[], Any] | None = None,
+        control_admin_checker: Callable[[str], bool] | None = None,
+        invitation_affinity_threshold: float = INVITATION_AFFINITY_THRESHOLD,
+        invitation_without_relationship_policy: str = "reject",
     ) -> None:
         self.audit = audit
         self.onebot = onebot
@@ -135,6 +146,19 @@ class JoinReviewRuntime:
         self.notification = notification or JoinNotificationService(store, onebot)
         # 紧急停止/熔断护栏谓词：返回 False 时拒绝处理入群申请。
         self.guard = guard
+        # Optional read-only cross-plugin bridge. Any failure or malformed
+        # value is treated as unknown and never grants invitation access.
+        self.invitation_affinity_reader = invitation_affinity_reader
+        self.invitation_relationship_available = invitation_relationship_available
+        self.control_admin_checker = control_admin_checker
+        self.invitation_affinity_threshold = max(
+            0.0, min(100.0, float(invitation_affinity_threshold))
+        )
+        self.invitation_without_relationship_policy = (
+            invitation_without_relationship_policy
+            if invitation_without_relationship_policy in {"approve", "reject"}
+            else "reject"
+        )
 
     @staticmethod
     def _request_id(parsed: ParsedJoinRequest) -> str:
@@ -180,7 +204,7 @@ class JoinReviewRuntime:
     async def handle_event(self, event: Any, raw: dict[str, Any]) -> JoinReviewResult:
         parsed = parse_join_request(event, raw)
         if parsed.sub_type == "invite":
-            return await self._handle_invitation(parsed)
+            return await self._handle_invitation(event, parsed)
         # OneBot may add request sub-types in the future. Do not feed an
         # unknown request into the question/answer auditor by accident.
         if parsed.sub_type != "add":
@@ -273,31 +297,134 @@ class JoinReviewRuntime:
             notification=notification,
         )
 
-    async def _handle_invitation(
-        self, parsed: ParsedJoinRequest
-    ) -> JoinReviewResult:
-        """Queue a configured incoming Bot invitation for manual review.
+    async def _inviter_affinity(
+        self, event: Any, parsed: ParsedJoinRequest
+    ) -> float | None:
+        reader = self.invitation_affinity_reader
+        if not callable(reader):
+            return None
+        try:
+            bot_id = ""
+            getter = getattr(event, "get_self_id", None)
+            if callable(getter):
+                bot_id = str(getter() or "")
+            try:
+                value = reader(
+                    parsed.platform_id, parsed.group_id, parsed.user_id, bot_id
+                )
+            except TypeError:
+                value = reader(parsed.platform_id, parsed.group_id, parsed.user_id)
+            if inspect.isawaitable(value):
+                value = await value
+            if isinstance(value, bool):
+                return None
+            score = float(value)
+            return score if math.isfinite(score) else None
+        except Exception:
+            # The reader is an optional read-only bridge. Never let a bridge
+            # error turn into an invitation approval.
+            return None
 
-        An invitation has no join-question answer and must never enter the
-        answer auditor or auto-approval path. The target group must have been
-        explicitly registered in the Page first; this prevents unsolicited
-        invitations from becoming an actionable platform request.
+    async def _relationship_available(self) -> bool:
+        checker = self.invitation_relationship_available
+        if not callable(checker):
+            return False
+        try:
+            value = checker()
+            if inspect.isawaitable(value):
+                value = await value
+            return value is True
+        except Exception:
+            return False
+
+    def _is_control_admin(self, user_id: str) -> bool:
+        checker = self.control_admin_checker
+        if not callable(checker):
+            return False
+        try:
+            return checker(str(user_id)) is True
+        except Exception:
+            return False
+
+    async def _invitation_gate(
+        self, event: Any, parsed: ParsedJoinRequest
+    ) -> str:
+        """Return the automatic invite decision: approve, reject, or pending.
+
+        ``pending`` is reserved for an installed relationship bridge whose
+        inviter affinity is unavailable or below threshold. Without that
+        bridge the explicit fallback setting is authoritative, including an
+        actual automatic rejection.
+        """
+        if self._is_control_admin(parsed.user_id):
+            return "approve"
+        if not await self._relationship_available():
+            # No 情 installed: use the explicit fallback policy.
+            fallback = self.invitation_without_relationship_policy
+            return "approve" if fallback == "approve" else "reject"
+        affinity = await self._inviter_affinity(event, parsed)
+        if affinity is None or affinity < self.invitation_affinity_threshold:
+            return "pending"
+        return "approve"
+
+    async def _handle_invitation(
+        self, event: Any, parsed: ParsedJoinRequest
+    ) -> JoinReviewResult:
+        """Handle a configured incoming Bot invitation with a trust gate.
+
+        Unregistered targets are ignored. Registered targets remain manually
+        actionable; only the automatic path applies the inviting person's
+        relationship gate.
         """
         target = await self.store.get_target_group(
             parsed.platform_id, parsed.group_id
         )
-        if target is None or not target.enabled:
+        control_admin = self._is_control_admin(parsed.user_id)
+        if (target is None or not target.enabled) and not control_admin:
             return JoinReviewResult("ignored")
         request_id = self._request_id(parsed)
         existing = await self.store.get_request(request_id)
-        if existing is not None:
-            if existing.status in FINAL_STATUSES:
-                return JoinReviewResult("already_processed", request=existing)
-            if existing.status in ACTIONABLE_STATUSES:
-                return JoinReviewResult("pending_invitation", request=existing)
+        if existing is not None and existing.status in FINAL_STATUSES:
             return JoinReviewResult("already_processed", request=existing)
-        request = await self._store_request(parsed)
-        return JoinReviewResult("pending_invitation", request=request)
+        if existing is not None and existing.status not in ACTIONABLE_STATUSES:
+            return JoinReviewResult("already_processed", request=existing)
+        request = existing or await self._store_request(parsed)
+
+        gate = "approve" if control_admin else await self._invitation_gate(event, parsed)
+        if gate == "pending":
+            return JoinReviewResult("pending_invitation", request=request)
+
+        approve = gate == "approve"
+
+        # Claim before the platform action so replayed invite events cannot
+        # cause parallel approvals. A failed action remains platform_error and
+        # is available to the Page for manual retry.
+        try:
+            claim = await self.store.claim_request(request.request_id)
+        except RequestNotActionable:
+            current = await self.store.get_request(request.request_id)
+            return JoinReviewResult("already_processed", request=current or request)
+        bot = getattr(event, "bot", None)
+        if bot is None:
+            ok, error = False, "platform_unavailable"
+        else:
+            try:
+                ok, error = await self.onebot.set_group_add_request_for_bot(
+                    bot, parsed.flag, "invite", approve=approve
+                )
+            except Exception:
+                ok, error = False, "platform_error"
+        updated = await self.store.finish_request(
+            claim,
+            platform_succeeded=ok,
+            status="approved" if approve else "rejected",
+            error=error,
+        )
+        if updated.status == "approved":
+            return JoinReviewResult("auto_approved", request=updated)
+        if updated.status == "rejected":
+            return JoinReviewResult("auto_rejected", request=updated)
+        return JoinReviewResult("pending_invitation", request=updated)
 
     async def process_request(
         self,
@@ -321,7 +448,12 @@ class JoinReviewRuntime:
                 target = await self.store.get_target_group(
                     request.platform_id, request.group_id
                 )
-                if target is None or not target.enabled:
+                # 控制管理员的邀请可以绕过 Page 预登记；普通邀请仍须
+                # 由管理员明确登记目标群，避免陌生邀请直接成为可执行项。
+                if (
+                    (target is None or not target.enabled)
+                    and not self._is_control_admin(request.user_id)
+                ):
                     return False, "target_group_not_configured"
                 return await self.onebot.set_group_add_request_for_bot(
                     bot,

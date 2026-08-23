@@ -123,6 +123,44 @@ def test_resolve_llm_request_returns_none_without_request_like_object():
     assert main._resolve_llm_request(plugin, FakeEvent()) is None
 
 
+def test_control_intent_requires_serious_label_and_bounded_confidence():
+    checker = main.IdentityGuardianPlugin._control_intent_is_serious
+    assert checker("joke", 0.99) is False
+    assert checker("serious", 0.79) is False
+    assert checker("serious", 1.01) is False
+    assert checker("confirmed", 0.8) is True
+
+
+def test_invitation_affinity_bridge_reads_inviter_not_target_group():
+    plugin = plugin_instance()
+    calls = []
+
+    class Relationship:
+        @staticmethod
+        def invitation_affinity_contract():
+            return {
+                "name": "relationship.invitation_affinity",
+                "version": "1.0",
+                "browser_exposed": False,
+                "permission_grant": False,
+            }
+
+        async def get_invitation_affinity(self, bot_id, user_id, **kwargs):
+            calls.append((bot_id, user_id, kwargs))
+            return {"version": "1.0", "status": "available", "affinity": 88}
+
+    plugin.context = SimpleNamespace(
+        get_star_instance=lambda name: Relationship()
+        if name == "astrbot_plugin_relationship"
+        else None
+    )
+    value = asyncio.run(
+        plugin._read_invitation_affinity("qq-main", "target-group", "inviter-1", "bot-1")
+    )
+    assert value == 88
+    assert calls == [("bot-1", "inviter-1", {"platform_id": "qq-main"})]
+
+
 # ------------------------------------------------ registry partial 拆解
 
 

@@ -243,6 +243,58 @@ class OneBotClient:
             return True, ""
         return False, "invite_group_member unsupported by adapter"
 
+    async def request_group_add_for_bot(
+        self,
+        bot: Any,
+        group_id: int,
+        *,
+        message: str = "",
+        answer: str = "",
+    ) -> tuple[bool, str]:
+        """Submit a Bot join request through an explicit adapter extension.
+
+        OneBot V11 has no standard action for a Bot applying to a group. The
+        adapter must expose an explicit method; this wrapper never guesses an
+        action name or calls ``set_group_add_request`` (that action processes
+        incoming requests only).
+        """
+        for method_name in (
+            "request_group_add",
+            "send_group_add_request",
+            "join_group",
+        ):
+            method = getattr(bot, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                result = await asyncio.wait_for(
+                    method(
+                        group_id=group_id,
+                        message=str(message or "")[:512],
+                        answer=str(answer or "")[:512],
+                    ),
+                    timeout=self.timeout,
+                )
+            except asyncio.TimeoutError:
+                return False, "request_group_add timed out"
+            except Exception as exc:
+                return False, f"request_group_add failed: {type(exc).__name__}"
+            if result is False:
+                return False, "request_group_add failed"
+            if isinstance(result, dict):
+                detail = str(
+                    result.get("wording")
+                    or result.get("msg")
+                    or result.get("message")
+                    or result.get("reason")
+                    or "submitted"
+                ).strip()
+                return True, detail[:256] or "submitted"
+            if isinstance(result, str) and result.strip():
+                return True, result.strip()[:256]
+            return True, "submitted"
+        return False, "request_group_add unsupported by adapter"
+
     async def get_group_member_info(
         self, event: Any, group_id: int, user_id: int, no_cache: bool = False
     ) -> dict | None:
