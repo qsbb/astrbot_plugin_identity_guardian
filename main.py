@@ -1880,6 +1880,7 @@ class IdentityGuardianPlugin(Star):
         """执行具体的 OneBot API 调用，返回 ``(结果文案, 是否成功)``。"""
         action = decision.action
         params = decision.params
+        join_membership: str | None = None
         event_group_id = str(event.get_group_id() or "")
         requested_group_id = str(params.get("group_id") or "").strip()
         if action in {"join_group", "leave_group"}:
@@ -1984,12 +1985,21 @@ class IdentityGuardianPlugin(Star):
             requested_group_id = str(params.get("group_id") or "").strip()
             if not requested_group_id.isdigit() or requested_group_id == "0":
                 return "加入群号无效。", False
-            ok, err = await self.onebot.request_group_add_for_bot(
-                getattr(event, "bot", None),
-                int(requested_group_id),
-                message=str(params.get("message") or ""),
-                answer=str(params.get("answer") or ""),
+            bot = getattr(event, "bot", None)
+            join_membership = await self._probe_bot_group_membership(
+                event, bot, int(requested_group_id)
             )
+            if join_membership == "member":
+                ok, err = True, "result=already_member; 未重复提交申请"
+            else:
+                ok, err = await self.onebot.request_group_add_for_bot(
+                    bot,
+                    int(requested_group_id),
+                    message=str(params.get("message") or ""),
+                    answer=str(params.get("answer") or ""),
+                )
+                if join_membership in {"not_member", "unknown"}:
+                    err = f"membership={join_membership}; {err}"
 
         elif action == "delete_message":
             msg_id = int(params.get("message_id", 0))
@@ -2065,8 +2075,41 @@ class IdentityGuardianPlugin(Star):
                 clear_cache()
 
         if ok:
+            if action == "join_group":
+                return f"加入群结果：{err or 'result=submitted'}。", True
             return f"已执行 {action}。", True
         return f"执行失败：{err}", False
+
+    async def _probe_bot_group_membership(
+        self, event: AstrMessageEvent, bot: Any, group_id: int
+    ) -> str:
+        """Return member/not_member/unknown before submitting a join request."""
+        if bot is None:
+            return "unknown"
+        try:
+            groups = await self.onebot.get_group_list(bot)
+        except Exception:
+            groups = None
+        if isinstance(groups, list):
+            target = str(group_id)
+            for item in groups:
+                if isinstance(item, dict) and str(item.get("group_id") or "") == target:
+                    return "member"
+            return "not_member"
+
+        get_self_id = getattr(event, "get_self_id", None)
+        self_id = str(get_self_id() if callable(get_self_id) else "").strip()
+        if not self_id.isdigit() or int(self_id) <= 0:
+            return "unknown"
+        try:
+            member = await self.onebot.get_group_member_info_for_bot(
+                bot, group_id, int(self_id), no_cache=True
+            )
+        except Exception:
+            member = None
+        if isinstance(member, dict) and str(member.get("user_id") or "") == self_id:
+            return "member"
+        return "unknown"
 
     # --- 具体工具定义 ---
 

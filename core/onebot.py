@@ -50,6 +50,55 @@ def _describe_exc(exc: Exception) -> str:
     return f"{base} ({detail})" if detail else base
 
 
+def _clean_action_detail(value: Any, limit: int = 180) -> str:
+    """Keep adapter failure text useful without returning a raw exception."""
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    return text[:limit]
+
+
+def _action_failure_detail(error: Any, *, fallback: str = "action_failed") -> str:
+    """Return a bounded, structured summary for an adapter action failure."""
+    if isinstance(error, dict):
+        payload = error
+        exc_type = ""
+    else:
+        payload = getattr(error, "result", None)
+        payload = payload if isinstance(payload, dict) else {}
+        exc_type = type(error).__name__ if isinstance(error, Exception) else ""
+
+    retcode = payload.get("retcode", getattr(error, "retcode", None))
+    if isinstance(retcode, bool):
+        retcode = None
+    if isinstance(retcode, int) and retcode >= 0:
+        code_text = str(retcode)
+    elif isinstance(retcode, str) and retcode.isdigit() and len(retcode) <= 12:
+        code_text = retcode
+    else:
+        code_text = ""
+
+    message = _clean_action_detail(
+        payload.get("wording")
+        or payload.get("msg")
+        or payload.get("message")
+        or payload.get("reason")
+        or getattr(error, "wording", None)
+        or getattr(error, "msg", None)
+    )
+    reason = _clean_action_detail(payload.get("reason_code"), limit=48)
+    if not reason:
+        reason = fallback
+    parts = [f"reason={reason}"]
+    if code_text:
+        parts.append(f"retcode={code_text}")
+    if message:
+        parts.append(f"detail={message}")
+    elif exc_type:
+        parts.append(f"error={exc_type}")
+    return "action_failed: " + "; ".join(parts)
+
+
 class OneBotClient:
     """OneBot V11 API 调用封装。"""
 
@@ -276,11 +325,13 @@ class OneBotClient:
                     timeout=self.timeout,
                 )
             except asyncio.TimeoutError:
-                return False, "request_group_add timed out"
+                return False, "action_failed: reason=timeout"
             except Exception as exc:
-                return False, f"request_group_add failed: {type(exc).__name__}"
+                return False, _action_failure_detail(exc)
+            if isinstance(result, dict) and result.get("status") == "failed":
+                return False, _action_failure_detail(result)
             if result is False:
-                return False, "request_group_add failed"
+                return False, "action_failed: reason=adapter_rejected"
             if isinstance(result, dict):
                 detail = str(
                     result.get("wording")
@@ -293,7 +344,7 @@ class OneBotClient:
             if isinstance(result, str) and result.strip():
                 return True, result.strip()[:256]
             return True, "submitted"
-        return False, "request_group_add unsupported by adapter"
+        return False, "action_failed: reason=unsupported"
 
     async def get_group_member_info(
         self, event: Any, group_id: int, user_id: int, no_cache: bool = False

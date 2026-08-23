@@ -906,6 +906,57 @@ def test_leave_group_membership_failure_never_calls_platform_leave():
     assert calls == []
 
 
+def test_join_group_membership_hit_skips_duplicate_request():
+    plugin = plugin_instance()
+    calls = []
+
+    class Event:
+        bot = object()
+
+        @staticmethod
+        def get_group_id():
+            return ""
+
+        @staticmethod
+        def get_sender_id():
+            return "9"
+
+        @staticmethod
+        def get_self_id():
+            return "8"
+
+    async def group_list(bot):
+        return [{"group_id": 1067974370}]
+
+    async def request_group_add(*args, **kwargs):
+        calls.append(True)
+        return True, "submitted"
+
+    plugin.onebot = SimpleNamespace(
+        get_group_list=group_list,
+        request_group_add_for_bot=request_group_add,
+    )
+    plugin.cooldown = SimpleNamespace(mark_action=lambda *args: None)
+    plugin._get_control_actor = lambda *args: _async_none()
+    plugin._get_actor = lambda *args: _async_none()
+    plugin.audit_log = SimpleNamespace(write_from_decision=lambda *args: None)
+    decision = main.ActionDecision(
+        allowed=True,
+        action="join_group",
+        params={"group_id": "1067974370"},
+    )
+
+    result, ok = asyncio.run(plugin._execute_action_result(Event(), decision, None))
+
+    assert ok is True
+    assert "already_member" in result
+    assert calls == []
+
+
+async def _async_none():
+    return None
+
+
 def test_leave_group_tool_requires_serious_intent_before_platform_call():
     plugin = plugin_instance()
     plugin._stopped = False

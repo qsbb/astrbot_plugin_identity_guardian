@@ -197,4 +197,21 @@ def test_request_group_add_fails_closed_without_adapter_extension():
         OneBotClient().request_group_add_for_bot(CallActionOnly(), 10001)
     )
     assert ok is False
-    assert detail == "request_group_add unsupported by adapter"
+    assert detail == "action_failed: reason=unsupported"
+
+
+def test_request_group_add_preserves_bounded_action_failure_detail():
+    class Adapter:
+        async def request_group_add(self, **params):
+            raise _ActionFailed(
+                {"retcode": 100, "wording": "目标群已存在成员，不能重复申请"}
+            )
+
+    ok, detail = asyncio.run(
+        OneBotClient().request_group_add_for_bot(Adapter(), 10001)
+    )
+    assert ok is False
+    assert "reason=action_failed" in detail
+    assert "retcode=100" in detail
+    assert "目标群已存在成员" in detail
+    assert len(detail) <= 240
