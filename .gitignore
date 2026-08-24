@@ -26,3 +26,8 @@ Thumbs.db
 
 # AstrBot 运行时数据
 data/
+
+# 本地备份/临时文件（勿提交）
+*.bak
+*.bak_*
+*.orig
