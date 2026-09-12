@@ -1,10 +1,6 @@
-# Changelog
-
-遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
-
-> 当前系列归属：知、言、序、情、境、声、核、临；下方版本号与日期均为真实历史记录，不因当前文档整改而改写。
-
 ## [Unreleased]
+
+- 开发中（未发版）：`series.module@1.0` 模块清单；`series.webui` 只读入群待审列表。
 
 ## 0.5.4 - 2026-08-23
 

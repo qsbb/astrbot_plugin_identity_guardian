@@ -377,6 +377,85 @@ class IdentityGuardianPlugin(Star):
     def series_control_set_mode(self, mode):
         return self._series_control.set_mode(mode)
 
+    def webui_panels_contract(self) -> dict[str, object]:
+        """series.webui@1.0：核统一接管时提供只读待审列表。"""
+        return {
+            "name": "series.webui@1.0",
+            "version": "1.0",
+            "plugin_id": PLUGIN_NAME,
+            "series_id": "ningxin_suxi",
+            "standalone": {
+                "available": True,
+                "entry": "/pages/join_review",
+                "pages": ["join_review"],
+            },
+            "panels": [
+                {
+                    "id": "join_review",
+                    "title": "入群待审",
+                    "description": "只读查看待审申请；审批/驳回仍在独立 join_review Page",
+                }
+            ],
+        }
+
+    async def webui_panel_data(self, panel: str) -> dict[str, object]:
+        if panel != "join_review":
+            return {"success": False, "error": "UNKNOWN_PANEL"}
+        try:
+            requests = await self.join_review_store.list_public_requests(
+                include_answer=False
+            )
+        except Exception:
+            requests = []
+        rows = []
+        for request in requests[:100]:
+            if not isinstance(request, dict):
+                continue
+            rows.append(
+                {
+                    "request_id": str(request.get("request_id") or request.get("id") or ""),
+                    "group": f"{request.get('platform_id') or ''}:{request.get('group_id') or ''}",
+                    "user": str(request.get("user_id") or request.get("sender_id") or ""),
+                    "status": str(request.get("status") or ""),
+                    "created": str(request.get("created_at") or ""),
+                }
+            )
+        return {
+            "success": True,
+            "title": "入群待审",
+            "description": f"共 {len(requests)} 条，展示前 {len(rows)} 条（只读）",
+            "columns": [
+                {"key": "request_id", "label": "申请 ID"},
+                {"key": "group", "label": "目标群"},
+                {"key": "user", "label": "用户"},
+                {"key": "status", "label": "状态"},
+                {"key": "created", "label": "创建时间"},
+            ],
+            "rows": rows,
+            "actions": [],
+        }
+
+    def webui_panel_action(self, panel: str, action: str, payload: dict) -> dict[str, object]:
+        return {"success": False, "error": "UNKNOWN_ACTION"}
+
+    def series_module_contract(self) -> dict[str, object]:
+        """series.module@1.0：声明模块身份、独立入口与统一接管能力。"""
+        return {
+            "name": "series.module@1.0",
+            "version": "1.0",
+            "series_id": "ningxin_suxi",
+            "plugin_id": "astrbot_plugin_identity_guardian",
+            "display_name": "序",
+            "role": "identity",
+            "standalone": {
+                "available": true,
+                "entry": "/pages/join_review",
+                "pages": ["join_review"],
+            },
+            "capabilities": ["control", "diagnostics", "identity_control_plane"],
+            "panels": [],
+        }
+
     def diagnostic_log_contract(self) -> dict[str, object]:
         return {
             "name": "series.diagnostics",
