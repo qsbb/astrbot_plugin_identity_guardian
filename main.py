@@ -448,7 +448,7 @@ class IdentityGuardianPlugin(Star):
             "display_name": "序",
             "role": "identity",
             "standalone": {
-                "available": true,
+                "available": True,
                 "entry": "/pages/join_review",
                 "pages": ["join_review"],
             },
