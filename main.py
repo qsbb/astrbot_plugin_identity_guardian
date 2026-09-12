@@ -378,10 +378,11 @@ class IdentityGuardianPlugin(Star):
         return self._series_control.set_mode(mode)
 
     def webui_panels_contract(self) -> dict[str, object]:
-        """series.webui@1.0：核统一接管时提供只读待审列表。"""
+        """series.webui@2.0：核统一接管时提供只读待审列表。"""
         return {
-            "name": "series.webui@1.0",
-            "version": "1.0",
+            "name": "series.webui@2.0",
+            "version": "2.0",
+            "capabilities": ["generic_table"],
             "plugin_id": PLUGIN_NAME,
             "series_id": "ningxin_suxi",
             "standalone": {
