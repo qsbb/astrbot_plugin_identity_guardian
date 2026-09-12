@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### 新增
+
+- `series.webui@2.0` 入群待审面板支持 owner 批准/驳回与待审刷新；动作只接受 `request_id` 并复用现有审核状态机，standalone Page 保持可用。
 
 ## 0.6.0 - 2026-09-12
 

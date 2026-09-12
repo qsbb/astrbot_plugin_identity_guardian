@@ -87,6 +87,7 @@ from .series_diagnostics import (
     logger,
 )
 from .series_control import SeriesControlAdapter
+from .series_webui import SeriesWebUIPanels
 
 PLUGIN_NAME = "astrbot_plugin_identity_guardian"
 LOG_PREFIX = "[idg]"
@@ -377,67 +378,31 @@ class IdentityGuardianPlugin(Star):
     def series_control_set_mode(self, mode):
         return self._series_control.set_mode(mode)
 
+    def _series_webui_panels(self) -> SeriesWebUIPanels:
+        """惰性获取统一面板适配层，兼容热重载与测试桩。"""
+        adapter = getattr(self, "_series_webui", None)
+        if adapter is None:
+            adapter = SeriesWebUIPanels(self)
+            self._series_webui = adapter
+        return adapter
+
     def webui_panels_contract(self) -> dict[str, object]:
-        """series.webui@2.0：核统一接管时提供只读待审列表。"""
-        return {
-            "name": "series.webui@2.0",
-            "version": "2.0",
-            "capabilities": ["generic_table"],
-            "plugin_id": PLUGIN_NAME,
-            "series_id": "ningxin_suxi",
-            "standalone": {
-                "available": True,
-                "entry": "/pages/join_review",
-                "pages": ["join_review"],
-            },
-            "panels": [
-                {
-                    "id": "join_review",
-                    "title": "入群待审",
-                    "description": "只读查看待审申请；审批/驳回仍在独立 join_review Page",
-                }
-            ],
-        }
+        """series.webui@2.0：核可统一查看并执行入群审批。"""
+        return self._series_webui_panels().contract()
 
     async def webui_panel_data(self, panel: str) -> dict[str, object]:
-        if panel != "join_review":
-            return {"success": False, "error": "UNKNOWN_PANEL"}
-        try:
-            requests = await self.join_review_store.list_public_requests(
-                include_answer=False
-            )
-        except Exception:
-            requests = []
-        rows = []
-        for request in requests[:100]:
-            if not isinstance(request, dict):
-                continue
-            rows.append(
-                {
-                    "request_id": str(request.get("request_id") or request.get("id") or ""),
-                    "group": f"{request.get('platform_id') or ''}:{request.get('group_id') or ''}",
-                    "user": str(request.get("user_id") or request.get("sender_id") or ""),
-                    "status": str(request.get("status") or ""),
-                    "created": str(request.get("created_at") or ""),
-                }
-            )
-        return {
-            "success": True,
-            "title": "入群待审",
-            "description": f"共 {len(requests)} 条，展示前 {len(rows)} 条（只读）",
-            "columns": [
-                {"key": "request_id", "label": "申请 ID"},
-                {"key": "group", "label": "目标群"},
-                {"key": "user", "label": "用户"},
-                {"key": "status", "label": "状态"},
-                {"key": "created", "label": "创建时间"},
-            ],
-            "rows": rows,
-            "actions": [],
-        }
+        return await self._series_webui_panels().panel_data(panel)
 
-    def webui_panel_action(self, panel: str, action: str, payload: dict) -> dict[str, object]:
-        return {"success": False, "error": "UNKNOWN_ACTION"}
+    async def webui_panel_action(
+        self,
+        panel: str,
+        action: str,
+        payload: dict,
+        context: dict | None = None,
+    ) -> dict[str, object]:
+        return await self._series_webui_panels().panel_action(
+            panel, action, payload, context=context
+        )
 
     def series_module_contract(self) -> dict[str, object]:
         """series.module@1.0：声明模块身份、独立入口与统一接管能力。"""
