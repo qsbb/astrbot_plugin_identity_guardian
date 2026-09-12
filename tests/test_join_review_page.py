@@ -143,13 +143,16 @@ def test_page_popover_has_focus_and_ready_failure_feedback():
     html = read_page("index.html")
     js = read_page("app.js")
     css = read_page("style.css")
+    series_css = read_page("series-ui.css")
     assert 'role="dialog" aria-labelledby="group-popover-title"' in html
     assert 'aria-haspopup="dialog"' in js
     assert 'anchor?.setAttribute("aria-expanded", "true")' in js
     assert 'trigger.focus({ preventScroll: true })' in js
     assert "页面通信初始化超时，可点击刷新重试" in js
     assert "@media (hover: hover) and (pointer: fine)" in css
-    assert "transform: scale(0.97)" in css
+    assert 'href="./series-ui.css"' in html
+    assert "body[data-series-ui] button:active" in series_css
+    assert "transform: translateY(0)" in series_css
 
 
 def test_popover_has_join_question_preset_editor():
