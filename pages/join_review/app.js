@@ -371,7 +371,7 @@ function permissionBadge(group) {
 }
 
 function switchMarkup(name, checked, disabled, label) {
-  return `<label class="toggle-field"><input class="editable-control" type="checkbox" data-field="${name}"`
+  return `<label class="toggle-field"><input class="editable-control si-toggle" type="checkbox" data-field="${name}"`
     + `${checked ? " checked" : ""}${disabled ? " disabled" : ""}><span>${escapeHtml(label)}</span></label>`;
 }
 

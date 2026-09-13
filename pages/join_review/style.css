@@ -308,53 +308,6 @@ body[data-series-ui] .status-badge.bad {
   text-overflow: ellipsis;
 }
 
-/* 页面自己的滑杆开关：共享库只定义标准 checkbox，因此这里补充变体。 */
-body[data-series-ui] .toggle-field input[type="checkbox"] {
-  position: relative;
-  appearance: none;
-  -webkit-appearance: none;
-  flex: none;
-  width: 40px;
-  min-width: 40px;
-  height: 22px;
-  min-height: 22px;
-  margin: 0;
-  padding: 0;
-  border: 1px solid var(--si-line-solid);
-  border-radius: 999px;
-  background: rgba(105, 115, 158, .16);
-  box-shadow: inset 0 1px 2px rgba(77, 84, 142, .08);
-  cursor: pointer;
-  transition: background var(--si-transition), border-color var(--si-transition);
-}
-
-body[data-series-ui] .toggle-field input[type="checkbox"]::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 2px 7px rgba(77, 84, 142, .22);
-  transition: transform var(--si-transition);
-}
-
-body[data-series-ui] .toggle-field input[type="checkbox"]:checked {
-  border-color: rgba(102, 92, 246, .42);
-  background: linear-gradient(135deg, #766cff, #5f55ed);
-}
-
-body[data-series-ui] .toggle-field input[type="checkbox"]:checked::after {
-  transform: translateX(18px);
-}
-
-body[data-series-ui] .toggle-field input[type="checkbox"]:disabled {
-  cursor: not-allowed;
-  opacity: .5;
-}
-
 .inline-select,
 .group-whitelist { width: 100%; }
 
@@ -1043,9 +996,7 @@ body[data-series-ui] button[aria-busy="true"]::before {
 
 @media (prefers-reduced-motion: reduce) {
   .metric,
-  .request-card,
-  body[data-series-ui] .toggle-field input[type="checkbox"],
-  body[data-series-ui] .toggle-field input[type="checkbox"]::after { transition: none; }
+  .request-card { transition: none; }
 
   body[data-series-ui] button[aria-busy="true"]::before { animation: none; }
 }
