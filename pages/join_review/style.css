@@ -231,6 +231,16 @@ body[data-series-ui] #legacy-notice h2 { color: var(--si-warning); }
   padding: 12px;
 }
 
+.filter-note {
+  margin: 0 0 10px;
+  padding: 8px 11px;
+  border: 1px solid var(--si-line, rgba(120,120,160,.22));
+  border-radius: 10px;
+  color: var(--si-muted, #666);
+  background: rgba(255, 255, 255, .5);
+  font-size: 12px;
+}
+
 .progressive-row td {
   padding: 0;
   border-bottom: 0;
@@ -840,7 +850,19 @@ body[data-series-ui] button[aria-busy="true"]::before {
 }
 
 @media (max-width: 560px) {
-  .cards { grid-template-columns: 1fr; }
+  /* 顶部指标压缩成一条状态条，避免占掉首屏 */
+  .cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .metric { padding: 10px 10px 10px 14px; }
+
+  .metric::before { inset: 10px auto 10px 0; }
+
+  .metric > span { margin-bottom: 4px; font-size: 11px; }
+
+  .metric strong { font-size: 20px; }
 
   .request-actions,
   .reject-panel { align-items: stretch; flex-direction: column; }
@@ -890,4 +912,31 @@ body[data-series-ui] button[aria-busy="true"]::before {
   body[data-series-ui] .toggle-field input[type="checkbox"]::after { transition: none; }
 
   body[data-series-ui] button[aria-busy="true"]::before { animation: none; }
+}
+
+
+.batch-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 10px 0;
+  background: rgba(255,255,255,.94);
+}
+
+/* 键盘快速审批：提示 + 当前选中卡片 */
+.keyboard-hint {
+  align-self: center;
+  color: var(--si-muted, #667085);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.request-card.is-keyboard-current,
+[data-request-id].is-keyboard-current {
+  border-color: rgba(102, 92, 246, .55);
+  box-shadow: var(--si-focus, 0 0 0 4px rgba(102, 92, 246, .18));
+}
+
+@media (max-width: 760px) {
+  .keyboard-hint { display: none; }
 }

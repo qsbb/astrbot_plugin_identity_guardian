@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>凝心溯溪-序 · 入群审核</title>
-  <link rel="stylesheet" href="./style.css?v=0.8.1">
-  <link rel="stylesheet" href="./series-ui.css" />
+  <link rel="stylesheet" href="./style.css?v=0.8.1-2">
+  <link rel="stylesheet" href="./series-ui.css?v=0.8.1-2" />
   </head>
 <body data-series-ui="1">
   <main class="shell">
@@ -74,7 +74,9 @@
           <p>零副作用诊断：走真实自动审核链路（预设 → 知联动 → 兜底），不触平台、不写记录、不发通知。</p>
         </div>
       </div>
-      <div class="simulate-form">
+      <details class="si-disclosure">
+        <summary>模拟申请</summary>
+<div class="simulate-form">
         <label class="popover-field"><span>群</span><select id="simulate-group" class="inline-select"><option value="">正在加载群列表…</option></select></label>
         <label class="popover-field"><span>问题</span><input id="simulate-question" class="group-whitelist" type="text" maxlength="2048" placeholder="入群问题（留空 = 仅按答案判断）"></label>
         <label class="popover-field"><span>答案</span><textarea id="simulate-answer" class="group-whitelist jq-answers" rows="3" maxlength="2048" placeholder="申请人填写的答案（必填）"></textarea></label>
@@ -82,6 +84,8 @@
           <button id="simulate-run" class="button compact" type="button">开始测试</button>
         </div>
       </div>
+      </details>
+
       <div id="simulate-error" class="notice error hidden" role="alert"></div>
       <div id="simulate-result" class="simulate-result hidden" aria-live="polite"></div>
     </article>
@@ -94,6 +98,17 @@
           <h2 id="groups-title">群配置</h2>
           <p id="group-summary">正在读取群列表…</p>
         </div>
+      </div>
+
+      <div class="si-filter-bar">
+        <select id="group-status-filter" class="inline-select" aria-label="群状态筛选">
+          <option value="">全部群</option>
+          <option value="configured">已配置</option>
+          <option value="unconfigured">未配置</option>
+          <option value="reviewable">可审核</option>
+          <option value="no_permission">无权限</option>
+        </select>
+        <input id="group-search" type="search" class="group-whitelist" placeholder="搜索群名或群号" aria-label="搜索群" />
       </div>
 
       <div class="batch-toolbar" aria-label="批量配置操作">
@@ -138,17 +153,33 @@
         </div>
         <button id="refresh-target-groups" class="button secondary compact" type="button">↻ 刷新目标群</button>
       </div>
+      <details class="si-disclosure">
+        <summary>登记目标群</summary>
       <div class="target-group-form" aria-label="添加目标群">
         <label class="popover-field"><span>Bot 平台</span><select id="target-platform" class="inline-select"><option value="">请先刷新已加入群</option></select></label>
         <label class="popover-field"><span>群号</span><input id="target-group-id" class="group-whitelist" type="text" inputmode="numeric" maxlength="20" placeholder="例如 123456789"></label>
         <label class="popover-field"><span>群名（可选）</span><input id="target-group-name" class="group-whitelist" type="text" maxlength="256" placeholder="未加入时用于页面识别"></label>
         <button id="add-target-group" class="button compact primary" type="button">添加目标群</button>
       </div>
+      </details>
+
+      <details class="si-disclosure">
+        <summary>邀请成员入群</summary>
       <div class="target-group-invite-form" aria-label="邀请成员入群">
         <label class="popover-field"><span>邀请到群</span><select id="invite-target-group" class="inline-select"><option value="">暂无可邀请的已加入群</option></select></label>
         <label class="popover-field"><span>成员 QQ</span><input id="invite-user-id" class="group-whitelist" type="text" inputmode="numeric" maxlength="20" placeholder="被邀请成员 QQ 号"></label>
         <button id="invite-target-member" class="button compact" type="button">邀请成员</button>
         <p class="target-group-hint">普通群成员也可以发起邀请；最终由 QQ 群管理在平台侧通过。标准 OneBot V11 未提供主动邀请扩展时会明确提示不支持。</p>
+      </div>
+      </details>
+
+      <div class="si-filter-bar">
+        <select id="target-status-filter" class="inline-select" aria-label="目标群状态筛选">
+          <option value="">全部状态</option>
+          <option value="joined">已加入</option>
+          <option value="pending">尚未加入</option>
+        </select>
+        <input id="target-search" type="search" class="group-whitelist" placeholder="搜索群名、群号或平台" aria-label="搜索目标群" />
       </div>
       <div id="target-groups-list" class="target-groups-list" aria-live="polite"><p class="empty-state">正在加载…</p></div>
     </article>
@@ -171,6 +202,7 @@
         </select>
         <select id="request-group-filter" class="inline-select" aria-label="申请群筛选"></select>
         <input id="request-search" type="search" class="group-whitelist" placeholder="搜索昵称或 QQ" aria-label="搜索申请" />
+        <span class="keyboard-hint" aria-hidden="true">键盘：J / K 选择，A 批准，D 驳回</span>
       </div>
       <div id="requests-list" class="request-list" aria-live="polite">
         <p class="empty-state">正在加载…</p>
@@ -184,7 +216,7 @@
   <div id="group-popover" class="group-popover hidden" role="dialog" aria-labelledby="group-popover-title"></div>
 
   <script src="/api/plugin/page/bridge-sdk.js"></script>
-  <script src="./series-ui.js"></script>
-  <script src="./app.js?v=0.8.1"></script>
+  <script src="./series-ui.js?v=0.8.1-2"></script>
+  <script src="./app.js?v=0.8.1-2"></script>
 </body>
 </html>

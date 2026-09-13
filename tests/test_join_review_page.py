@@ -12,7 +12,7 @@ def read_page(name: str) -> str:
 def test_page_loads_bridge_before_application_script():
     html = read_page("index.html")
     bridge = '<script src="/api/plugin/page/bridge-sdk.js"></script>'
-    app = '<script src="./app.js?v=0.8.1"></script>'
+    app = '<script src="./app.js?v=0.8.1-2"></script>'
     assert bridge in html
     assert app in html
     assert html.index(bridge) < html.index(app)
@@ -150,7 +150,7 @@ def test_page_popover_has_focus_and_ready_failure_feedback():
     assert 'trigger.focus({ preventScroll: true })' in js
     assert "页面通信初始化超时，可点击刷新重试" in js
     assert "@media (hover: hover) and (pointer: fine)" in css
-    assert 'href="./series-ui.css"' in html
+    assert 'href="./series-ui.css?v=' in html
     assert "body[data-series-ui] button:active" in series_css
     assert "transform: translateY(0)" in series_css
 
@@ -333,9 +333,70 @@ def test_large_lists_use_client_side_progressive_rendering():
     assert ".progressive-row td" in css
 
 
+def test_targets_and_groups_have_filters_and_reset_on_full_load():
+    js = read_page("app.js")
+    html = read_page("index.html")
+
+    # 目标群筛选
+    assert 'id="target-status-filter"' in html
+    assert 'id="target-search"' in html
+    assert "function filteredTargetGroups()" in js
+    assert 'targetStatusFilter === "joined"' in js
+    assert 'targetStatusFilter === "pending"' in js
+    assert "const filtered = filteredTargetGroups();" in js
+    assert "没有匹配的目标群" in js
+
+    # 完整加载时筛选条件与输入框一起复位
+    load_all = js.split("async function loadAll()", 1)[1].split("async function refreshJoinedGroups", 1)[0]
+    assert 'targetStatusFilter = "";' in load_all
+    assert 'targetQuery = "";' in load_all
+    assert 'groupStatusFilter = "";' in load_all
+    assert 'groupSearchField.value = "";' in load_all
+    assert 'targetSearchField.value = "";' in load_all
+
+    # 变更筛选后回到第一页
+    assert 'progressiveState.targets = PAGE_SIZE;' in js
+    assert 'progressiveState.groups = PAGE_SIZE;' in js
+    assert ".filter-note" in read_page("style.css")
+
+
 def test_status_and_errors_prefer_shared_series_toast():
     js = read_page("app.js")
     assert 'window.SeriesUI?.toast' in js
     assert 'window.SeriesUI.toast(message, "error")' in js
     assert 'window.SeriesUI.toast(message, "info")' in js
     assert 'id="page-error"' in read_page("index.html")
+
+
+def test_mobile_top_metrics_are_compacted_into_status_strip():
+    css = read_page("style.css")
+    narrow = css[css.index("@media (max-width: 560px)") : css.index("@media (prefers-reduced-motion: reduce)")]
+
+    assert ".cards {" in narrow
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr));" in narrow
+    assert ".metric strong { font-size: 20px; }" in narrow
+    assert ".cards { grid-template-columns: 1fr; }" not in narrow
+
+
+def test_pending_requests_support_keyboard_quick_actions():
+    js = read_page("app.js")
+    html = read_page("index.html")
+    css = read_page("style.css")
+
+    assert "let keyboardRequestId" in js
+    assert "function visibleRequestCards()" in js
+    assert "function highlightRequestCard(requestId" in js
+    assert "function handleRequestKeyboard(event)" in js
+    assert 'document.addEventListener("keydown", handleRequestKeyboard);' in js
+    # 只在待审面板可见、且焦点不在输入控件时生效
+    assert 'document.getElementById("page-panel-pending")' in js
+    assert 'target.closest?.("input, textarea, select")' in js
+    assert 'if (!["j", "k", "a", "d"].includes(key)) return;' in js
+    assert "event.preventDefault();" in js
+    # A 走既有批准按钮，D 走既有行内驳回流程，不新增接口
+    assert '\'[data-request-action="approve"]\'' in js
+    assert '\'[data-request-action="reject"]\'' in js
+    assert "button.click();" in js
+    assert "highlightRequestCard(keyboardRequestId, { scroll: false });" in js
+    assert "keyboard-hint" in html
+    assert ".is-keyboard-current" in css

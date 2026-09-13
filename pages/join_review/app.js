@@ -10,6 +10,10 @@ let rejectConfirmId = null;
 let requestStatusFilter = "";
 let requestGroupFilter = "";
 let requestQuery = "";
+let groupStatusFilter = "";
+let groupQuery = "";
+let targetStatusFilter = "";
+let targetQuery = "";
 
 const state = {
   joinedGroups: [],
@@ -344,15 +348,40 @@ function renderGroupRow(group) {
   </tr>`;
 }
 
+function filteredGroups() {
+  const query = groupQuery.trim().toLowerCase();
+  return state.groups.filter((group) => {
+    const status = String(group.status || "");
+    if (groupStatusFilter === "configured" && !group.configured) return false;
+    if (groupStatusFilter === "unconfigured" && group.configured) return false;
+    if (groupStatusFilter === "reviewable" && !(group.joined && group.can_review)) return false;
+    if (groupStatusFilter === "no_permission" && group.can_review) return false;
+    if (query && !`${group.group_name || ""} ${group.group_id || ""}`.toLowerCase().includes(query)) return false;
+    return true;
+  });
+}
+
+function filteredTargetGroups() {
+  const query = targetQuery.trim().toLowerCase();
+  return state.targetGroups.filter((target) => {
+    if (targetStatusFilter === "joined" && !target.joined) return false;
+    if (targetStatusFilter === "pending" && target.joined) return false;
+    if (!query) return true;
+    return [target.group_name, target.group_id, target.platform_id]
+      .some((value) => String(value || "").toLowerCase().includes(query));
+  });
+}
+
 function renderGroups() {
   mergeGroups();
   const body = $("#groups-body");
-  const shownGroups = state.groups.slice(0, progressiveState.groups);
-  body.innerHTML = state.groups.length
-    ? shownGroups.map(renderGroupRow).join("") + progressiveFooter("groups", state.groups.length, shownGroups.length, true)
-    : '<tr class="empty-row"><td colspan="5">当前 aiocqhttp Bot 暂无可显示的群，请刷新已加入群。</td></tr>';
+  const filtered = filteredGroups();
+  const shownGroups = filtered.slice(0, progressiveState.groups);
+  body.innerHTML = filtered.length
+    ? shownGroups.map(renderGroupRow).join("") + progressiveFooter("groups", filtered.length, shownGroups.length, true)
+    : '<tr class="empty-row"><td colspan="5">没有符合当前筛选条件的群。</td></tr>';
   const configuredCount = state.groups.filter((group) => group.configured).length;
-  $("#group-summary").textContent = `共 ${state.groups.length} 个群，${configuredCount} 个已配置；列表每批显示 ${PAGE_SIZE} 个，全选作用于全部群。`;
+  $("#group-summary").textContent = `当前显示 ${shownGroups.length}/${filtered.length} 个群，共 ${state.groups.length} 个，已配置 ${configuredCount} 个；全选作用于全部群。`;
   $("#legacy-notice").classList.toggle("hidden", !state.legacyAvailable);
   updateBatchUi();
   updateStats();
@@ -783,6 +812,12 @@ function renderRequests() {
   const actionable = filtered.filter((request) => ["pending", "platform_error"].includes(String(request.status || "pending"))).length;
   $("#request-summary").textContent = `${actionable} 条待处理，当前显示 ${shownRequests.length}/${filtered.length} 条。`;
   updateStats();
+  // 重绘后保持键盘选中态；对应申请已经不在列表里就清空。
+  if (keyboardRequestId) {
+    const stillThere = document.querySelector(`#requests-list [data-request-id="${CSS.escape(keyboardRequestId)}"]`);
+    if (stillThere) highlightRequestCard(keyboardRequestId, { scroll: false });
+    else keyboardRequestId = "";
+  }
 }
 
 function renderTargetPlatformOptions() {
@@ -809,15 +844,23 @@ function renderTargetGroups() {
     list.innerHTML = '<p class="empty-state">暂无目标群。添加后才能接收该群审核推送或处理 Bot 邀请。</p>';
     return;
   }
-  const shownTargets = state.targetGroups.slice(0, progressiveState.targets);
-  list.innerHTML = shownTargets.map((target) => {
+  const filtered = filteredTargetGroups();
+  if (!filtered.length) {
+    list.innerHTML = `<p class="empty-state">没有匹配的目标群；当前共 ${state.targetGroups.length} 个，换个关键词或状态试试。</p>`;
+    return;
+  }
+  const shownTargets = filtered.slice(0, progressiveState.targets);
+  const filterNote = filtered.length === state.targetGroups.length
+    ? ""
+    : `<p class="filter-note">已筛选出 ${filtered.length} / 共 ${state.targetGroups.length} 个目标群</p>`;
+  list.innerHTML = filterNote + shownTargets.map((target) => {
     const joinedLabel = target.joined ? `已加入 · ${target.bot_role || "未知身份"}` : "尚未加入，等待邀请";
     const key = groupKey(target.platform_id, target.group_id);
     return `<div class="target-group-row" data-target-key="${escapeHtml(key)}">
       <div><strong>${escapeHtml(target.group_name || "未知群名")}</strong><span class="secondary-value">${escapeHtml(target.group_id)} · ${escapeHtml(target.platform_id)}</span></div>
       <div class="target-group-meta"><span class="status-badge ${target.joined ? "good" : "warn"}">${escapeHtml(joinedLabel)}</span><button class="button compact danger-quiet" type="button" data-remove-target>移除</button></div>
     </div>`;
-  }).join("") + progressiveFooter("targets", state.targetGroups.length, shownTargets.length);
+  }).join("") + progressiveFooter("targets", filtered.length, shownTargets.length);
 }
 
 function renderInviteGroupOptions() {
@@ -1022,6 +1065,18 @@ async function refreshStoredData() {
 async function loadAll() {
   clearPageError();
   resetProgressive("requests", "groups", "targets");
+  groupStatusFilter = "";
+  groupQuery = "";
+  targetStatusFilter = "";
+  targetQuery = "";
+  const groupFilterField = $("#group-status-filter");
+  if (groupFilterField) groupFilterField.value = "";
+  const groupSearchField = $("#group-search");
+  if (groupSearchField) groupSearchField.value = "";
+  const targetFilterField = $("#target-status-filter");
+  if (targetFilterField) targetFilterField.value = "";
+  const targetSearchField = $("#target-search");
+  if (targetSearchField) targetSearchField.value = "";
   const [joinedPayload, groupsPayload, requestsPayload, targetsPayload] = await Promise.all([
     apiGet("joined-groups"),
     apiGet("groups"),
@@ -1168,6 +1223,18 @@ async function runBatch(action) {
     showPageError(error);
     return;
   }
+  if (action === "disable_all") {
+    const confirmed = window.SeriesUI?.confirm
+      ? await window.SeriesUI.confirm({
+        title: "全部关闭",
+        message: `将关闭 ${groups.length} 个群的自动审核和发送审核，确定继续吗？`,
+        confirmText: "全部关闭",
+        cancelText: "取消",
+        danger: true,
+      })
+      : false;
+    if (!confirmed) return;
+  }
   state.batchBusy = true;
   updateBatchUi();
   try {
@@ -1309,6 +1376,26 @@ function bindEvents() {
     }
   });
 
+  $("#group-status-filter")?.addEventListener("change", (event) => {
+    groupStatusFilter = event.target.value;
+    progressiveState.groups = PAGE_SIZE;
+    renderGroups();
+  });
+  $("#group-search")?.addEventListener("input", (event) => {
+    groupQuery = event.target.value;
+    progressiveState.groups = PAGE_SIZE;
+    renderGroups();
+  });
+  $("#target-status-filter")?.addEventListener("change", (event) => {
+    targetStatusFilter = event.target.value;
+    progressiveState.targets = PAGE_SIZE;
+    renderTargetGroups();
+  });
+  $("#target-search")?.addEventListener("input", (event) => {
+    targetQuery = event.target.value;
+    progressiveState.targets = PAGE_SIZE;
+    renderTargetGroups();
+  });
   $("#select-all").addEventListener("change", (event) => {
     state.selected = event.currentTarget.checked
       ? new Set(state.groups
@@ -1383,6 +1470,7 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && state.popoverKey) closeGroupPopover();
   });
+  document.addEventListener("keydown", handleRequestKeyboard);
 
   for (const button of $all("[data-batch-action]")) {
     button.addEventListener("click", () => runBatch(button.dataset.batchAction));
@@ -1419,6 +1507,53 @@ function bindEvents() {
     }
     handleRequestAction(card, button.dataset.requestAction);
   });
+}
+
+let keyboardRequestId = "";
+
+function visibleRequestCards() {
+  return $all('#requests-list [data-request-id]').filter((card) => !card.hidden);
+}
+
+function highlightRequestCard(requestId, { scroll = true } = {}) {
+  keyboardRequestId = requestId;
+  $all('#requests-list [data-request-id]').forEach((card) => {
+    const active = card.dataset.requestId === requestId;
+    card.classList.toggle("is-keyboard-current", active);
+    if (active && scroll) card.scrollIntoView({ block: "nearest" });
+  });
+}
+
+// 键盘快速审批：J/K 选择，A 批准，D 走原来的行内驳回流程。
+// 只在待审申请面板可见、焦点不在输入控件时生效，避免抢输入。
+function handleRequestKeyboard(event) {
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+  const target = event.target;
+  if (target && (target.closest?.("input, textarea, select") || target.isContentEditable)) return;
+  const panel = document.getElementById("page-panel-pending");
+  if (!panel || panel.hidden) return;
+  const cards = visibleRequestCards();
+  if (!cards.length) return;
+  const key = event.key.toLowerCase();
+  if (!["j", "k", "a", "d"].includes(key)) return;
+  const currentIndex = cards.findIndex((card) => card.dataset.requestId === keyboardRequestId);
+  if (key === "j" || key === "k") {
+    event.preventDefault();
+    const base = currentIndex < 0 ? (key === "j" ? -1 : 0) : currentIndex;
+    const nextIndex = key === "j"
+      ? Math.min(cards.length - 1, base + 1)
+      : Math.max(0, base - 1);
+    highlightRequestCard(cards[nextIndex].dataset.requestId);
+    return;
+  }
+  const card = cards[currentIndex < 0 ? 0 : currentIndex];
+  if (!card || state.requestBusy.has(String(card.dataset.requestId || ""))) return;
+  event.preventDefault();
+  const selector = key === "a" ? '[data-request-action="approve"]' : '[data-request-action="reject"]';
+  const button = $(selector, card);
+  if (!button) return;
+  highlightRequestCard(card.dataset.requestId, { scroll: false });
+  button.click();
 }
 
 async function init() {
