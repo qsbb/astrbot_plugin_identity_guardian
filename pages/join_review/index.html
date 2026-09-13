@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>凝心溯溪-序 · 入群审核</title>
-  <link rel="stylesheet" href="./style.css?v=0.8.2-1">
-  <link rel="stylesheet" href="./series-ui.css?v=0.8.2-1" />
+  <link rel="stylesheet" href="./style.css?v=0.8.3-1">
+  <link rel="stylesheet" href="./series-ui.css?v=0.8.3-1" />
   </head>
 <body data-series-ui="1">
   <main class="shell">
@@ -189,23 +189,50 @@
       <article class="card" aria-labelledby="requests-title">
       <div class="section-heading request-heading">
         <div>
-          <h2 id="requests-title">待审申请</h2>
+          <h2 id="requests-title">双栏审计</h2>
           <p id="request-summary">正在读取申请…</p>
         </div>
         <button id="refresh-requests" class="button secondary compact" type="button">↻ 刷新申请</button>
+      </div>
+      <div class="request-chip-row" role="group" aria-label="申请快速筛选">
+        <button class="request-summary-chip warn" type="button" data-request-chip="pending" aria-pressed="false">待审 <strong id="chip-pending-count">0</strong></button>
+        <button class="request-summary-chip good" type="button" data-request-chip="approved" aria-pressed="false">今日已批准 <strong id="chip-approved-count">0</strong></button>
+        <button class="request-summary-chip bad" type="button" data-request-chip="rejected" aria-pressed="false">今日已驳回 <strong id="chip-rejected-count">0</strong></button>
+        <button class="request-summary-chip bad" type="button" data-request-chip="platform_error" aria-pressed="false">平台失败 <strong id="chip-platform-error-count">0</strong></button>
+        <button id="request-history-mode" class="button compact secondary request-history-toggle" type="button" aria-pressed="false">全部记录</button>
       </div>
       <div class="si-filter-bar">
         <select id="request-status-filter" class="inline-select" aria-label="申请状态筛选">
           <option value="">全部状态</option>
           <option value="pending">待审</option>
           <option value="platform_error">平台失败</option>
+          <option value="approved">已批准</option>
+          <option value="rejected">已驳回</option>
+          <option value="expired">已过期</option>
         </select>
         <select id="request-group-filter" class="inline-select" aria-label="申请群筛选"></select>
         <input id="request-search" type="search" class="group-whitelist" placeholder="搜索昵称或 QQ" aria-label="搜索申请" />
         <span class="keyboard-hint">键盘：J / K 选择，A 批准，D 驳回</span>
       </div>
-      <div id="requests-list" class="request-list" aria-live="polite">
-        <p class="empty-state">正在加载…</p>
+      <div class="audit-columns">
+        <section class="audit-column audit-column-pending" aria-labelledby="pending-column-title">
+          <div class="audit-column-heading">
+            <h3 id="pending-column-title">待审 · <span id="pending-column-count">0</span></h3>
+            <span class="soft-pill">含平台失败重试</span>
+          </div>
+          <div id="requests-list" class="request-list" aria-live="polite">
+            <p class="empty-state">正在加载…</p>
+          </div>
+        </section>
+        <section class="audit-column audit-column-history" aria-labelledby="history-column-title">
+          <div class="audit-column-heading">
+            <h3 id="history-column-title">已处理（今天）</h3>
+            <span class="soft-pill">按处理时间倒序</span>
+          </div>
+          <div id="history-requests-list" class="request-history-list" aria-live="polite">
+            <p class="empty-state">正在加载…</p>
+          </div>
+        </section>
       </div>
     </article>
     </section>
@@ -216,7 +243,7 @@
   <div id="group-popover" class="group-popover hidden" role="dialog" aria-labelledby="group-popover-title"></div>
 
   <script src="/api/plugin/page/bridge-sdk.js"></script>
-  <script src="./series-ui.js?v=0.8.2-1"></script>
-  <script src="./app.js?v=0.8.2-1"></script>
+  <script src="./series-ui.js?v=0.8.3-1"></script>
+  <script src="./app.js?v=0.8.3-1"></script>
 </body>
 </html>

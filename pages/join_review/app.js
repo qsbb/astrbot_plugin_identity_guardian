@@ -4,12 +4,13 @@ let bridge = null;
 let popoverTrigger = null;
 const API_PREFIX = "join-review";
 const PAGE_SIZE = window.matchMedia("(max-width: 720px)").matches ? 10 : 20;
-const progressiveState = { requests: PAGE_SIZE, groups: PAGE_SIZE, targets: PAGE_SIZE };
+const progressiveState = { requests: PAGE_SIZE, history: PAGE_SIZE, groups: PAGE_SIZE, targets: PAGE_SIZE };
 // 仅用于渲染层：当前展开行内驳回原因输入的申请 id。
 let rejectConfirmId = null;
 let requestStatusFilter = "";
 let requestGroupFilter = "";
 let requestQuery = "";
+let requestHistoryAll = false;
 let groupStatusFilter = "";
 let groupQuery = "";
 let targetStatusFilter = "";
@@ -714,6 +715,46 @@ function formatTime(timestamp) {
   return Number.isNaN(date.getTime()) ? "未知时间" : date.toLocaleString("zh-CN", { hour12: false });
 }
 
+function requestTimestamp(request) {
+  return Number(request.processed_at) > 0 ? Number(request.processed_at) : Number(request.updated_at) || 0;
+}
+
+function isSameLocalDay(timestamp, now = new Date()) {
+  const number = Number(timestamp);
+  if (!Number.isFinite(number) || number <= 0) return false;
+  const date = new Date(number < 1e12 ? number * 1000 : number);
+  return !Number.isNaN(date.getTime())
+    && date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+}
+
+function formatProcessedTime(timestamp, includeDate) {
+  const number = Number(timestamp);
+  if (!Number.isFinite(number) || number <= 0) return "—";
+  const date = new Date(number < 1e12 ? number * 1000 : number);
+  if (Number.isNaN(date.getTime())) return "—";
+  const time = date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (!includeDate) return time;
+  const day = date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+  return `${day} ${time}`;
+}
+
+function processedDateTimeAttribute(timestamp) {
+  const number = Number(timestamp);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  const date = new Date(number < 1e12 ? number * 1000 : number);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function isActionableRequest(request) {
+  return ["pending", "platform_error"].includes(String(request.status || "pending"));
+}
+
+function isFinalRequest(request) {
+  return ["approved", "rejected", "expired"].includes(String(request.status || ""));
+}
+
 function groupDisplayForRequest(request) {
   const group = state.groupMap.get(groupKey(request.platform_id, request.group_id));
   const target = state.targetGroups.find((item) => (
@@ -727,7 +768,7 @@ function groupDisplayForRequest(request) {
 function renderRequestCard(request) {
   const requestId = String(request.request_id || "");
   const busy = state.requestBusy.has(requestId);
-  const actionable = ["pending", "platform_error"].includes(String(request.status || "pending"));
+  const actionable = isActionableRequest(request);
   const invitation = request.request_kind === "invitation" || request.sub_type === "invite";
   const [statusLabel, statusClass] = requestStatus(request.status || "pending");
   const nickname = stringValue(request.nickname) || "未知";
@@ -773,6 +814,30 @@ function renderRequestCard(request) {
   </article>`;
 }
 
+function renderHistoryItem(request) {
+  const requestId = String(request.request_id || "");
+  const status = String(request.status || "");
+  const [statusLabel, statusClass] = requestStatus(status);
+  const invitation = request.request_kind === "invitation" || request.sub_type === "invite";
+  const applicant = invitation ? "邀请 Bot 加入" : (stringValue(request.nickname) || "未知");
+  const reason = stringValue(request.review_reason);
+  const processedAt = requestTimestamp(request);
+  const reasonMarkup = status === "rejected" && reason
+    ? `<p class="audit-history-reason">驳回原因：${escapeHtml(reason)}</p>`
+    : "";
+  return `<article class="audit-history-item" data-history-request-id="${escapeHtml(requestId)}">
+    <div class="audit-history-main">
+      <div class="audit-history-person">
+        <strong>${escapeHtml(applicant)}</strong>
+        <span class="secondary-value">QQ ${escapeHtml(stringValue(request.user_id) || "未知")}</span>
+      </div>
+      <span class="status-badge ${statusClass}">${escapeHtml(statusLabel)}</span>
+      ${reasonMarkup}
+    </div>
+    <time class="audit-history-time" datetime="${escapeHtml(processedDateTimeAttribute(processedAt))}">${escapeHtml(formatProcessedTime(processedAt, requestHistoryAll))}</time>
+  </article>`;
+}
+
 function progressiveFooter(kind, total, shown, table = false) {
   if (total <= PAGE_SIZE) return "";
   const remaining = Math.max(0, total - shown);
@@ -792,6 +857,7 @@ function resetProgressive(...kinds) {
 
 function renderProgressiveKind(kind) {
   if (kind === "requests") renderRequests();
+  else if (kind === "history") renderRequests();
   else if (kind === "groups") renderGroups();
   else if (kind === "targets") renderTargetGroups();
 }
@@ -822,7 +888,7 @@ function renderRequestGroupOptions() {
   const current = select.value;
   const options = Array.from(new Map(state.requests.map((request) => [
     groupKey(request.platform_id, request.group_id),
-    request.group_name || request.group_id || "未知群",
+    groupDisplayForRequest(request),
   ]).filter(([key]) => key)));
   select.innerHTML = '<option value="">全部群</option>' + options
     .map(([key, label]) => `<option value="${escapeHtml(key)}">${escapeHtml(label)}</option>`)
@@ -830,16 +896,62 @@ function renderRequestGroupOptions() {
   if (options.some(([key]) => key === current)) select.value = current;
 }
 
+function updateRequestChips() {
+  const now = new Date();
+  const count = (predicate) => state.requests.filter(predicate).length;
+  const counts = {
+    pending: count((request) => String(request.status || "pending") === "pending"),
+    approved: count((request) => request.status === "approved" && isSameLocalDay(requestTimestamp(request), now)),
+    rejected: count((request) => request.status === "rejected" && isSameLocalDay(requestTimestamp(request), now)),
+    platform_error: count((request) => request.status === "platform_error"),
+  };
+  const fields = {
+    pending: "#chip-pending-count",
+    approved: "#chip-approved-count",
+    rejected: "#chip-rejected-count",
+    platform_error: "#chip-platform-error-count",
+  };
+  for (const [name, selector] of Object.entries(fields)) {
+    const element = $(selector);
+    if (element) element.textContent = String(counts[name]);
+  }
+  $all("[data-request-chip]").forEach((button) => {
+    const active = requestStatusFilter === button.dataset.requestChip;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  const historyButton = $("#request-history-mode");
+  if (historyButton) {
+    historyButton.classList.toggle("active", requestHistoryAll);
+    historyButton.setAttribute("aria-pressed", String(requestHistoryAll));
+    historyButton.textContent = requestHistoryAll ? "只看今天" : "全部记录";
+  }
+}
+
 function renderRequests() {
   renderRequestGroupOptions();
-  const list = $("#requests-list");
+  const pendingList = $("#requests-list");
+  const historyList = $("#history-requests-list");
   const filtered = filteredRequests();
-  const shownRequests = filtered.slice(0, progressiveState.requests);
-  list.innerHTML = filtered.length
-    ? shownRequests.map(renderRequestCard).join("") + progressiveFooter("requests", filtered.length, shownRequests.length)
-    : '<p class="empty-state">没有符合当前筛选条件的入群申请。</p>';
-  const actionable = filtered.filter((request) => ["pending", "platform_error"].includes(String(request.status || "pending"))).length;
-  $("#request-summary").textContent = `${actionable} 条待处理，当前显示 ${shownRequests.length}/${filtered.length} 条。`;
+  const pending = filtered.filter(isActionableRequest);
+  const history = filtered
+    .filter(isFinalRequest)
+    .filter((request) => requestHistoryAll || isSameLocalDay(requestTimestamp(request)))
+    .sort((left, right) => requestTimestamp(right) - requestTimestamp(left));
+  const shownRequests = pending.slice(0, progressiveState.requests);
+  const shownHistory = history.slice(0, progressiveState.history);
+
+  pendingList.innerHTML = pending.length
+    ? shownRequests.map(renderRequestCard).join("") + progressiveFooter("requests", pending.length, shownRequests.length)
+    : '<p class="empty-state">没有符合当前筛选条件的待审申请。</p>';
+  historyList.innerHTML = history.length
+    ? shownHistory.map(renderHistoryItem).join("") + progressiveFooter("history", history.length, shownHistory.length)
+    : '<p class="empty-state">没有符合条件的已处理记录。</p>';
+
+  $("#pending-column-count").textContent = String(pending.length);
+  $("#history-column-title").textContent = requestHistoryAll ? "全部记录" : "已处理（今天）";
+  $("#request-summary").textContent = `${pending.length} 条待处理，${history.length} 条${requestHistoryAll ? "历史" : "今日已处理"}；左栏保留平台失败重试。`;
+  updateRequestChips();
   updateStats();
   // 重绘后保持键盘选中态；对应申请已经不在列表里就清空。
   if (keyboardRequestId) {
@@ -1093,7 +1205,7 @@ async function refreshStoredData() {
 
 async function loadAll() {
   clearPageError();
-  resetProgressive("requests", "groups", "targets");
+  resetProgressive("requests", "history", "groups", "targets");
   groupStatusFilter = "";
   groupQuery = "";
   targetStatusFilter = "";
@@ -1375,20 +1487,43 @@ function bindEvents() {
   $("#request-status-filter")?.addEventListener("change", (event) => {
     requestStatusFilter = event.target.value;
     progressiveState.requests = PAGE_SIZE;
+    progressiveState.history = PAGE_SIZE;
     renderRequests();
   });
   $("#request-group-filter")?.addEventListener("change", (event) => {
     requestGroupFilter = event.target.value;
     progressiveState.requests = PAGE_SIZE;
+    progressiveState.history = PAGE_SIZE;
     renderRequests();
   });
   $("#request-search")?.addEventListener("input", (event) => {
     requestQuery = event.target.value;
     progressiveState.requests = PAGE_SIZE;
+    progressiveState.history = PAGE_SIZE;
     renderRequests();
   });
+  $all("[data-request-chip]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const next = button.dataset.requestChip || "";
+      requestStatusFilter = requestStatusFilter === next ? "" : next;
+      if (["approved", "rejected"].includes(requestStatusFilter)) requestHistoryAll = false;
+      const statusField = $("#request-status-filter");
+      if (statusField) statusField.value = requestStatusFilter;
+      progressiveState.requests = PAGE_SIZE;
+      progressiveState.history = PAGE_SIZE;
+      renderRequests();
+    });
+  });
+  $("#request-history-mode")?.addEventListener("click", () => {
+    requestHistoryAll = !requestHistoryAll;
+    progressiveState.history = PAGE_SIZE;
+    renderRequests();
+  });
+  $("#history-requests-list")?.addEventListener("click", (event) => {
+    handleProgressiveClick(event, "history");
+  });
   $("#refresh-requests").addEventListener("click", async (event) => {
-    resetProgressive("requests");
+    resetProgressive("requests", "history");
     const button = event.currentTarget;
     if (button.getAttribute("aria-busy") === "true") return;
     setButtonBusy(button, true, "刷新中…");

@@ -12,10 +12,16 @@ def read_page(name: str) -> str:
 def test_page_loads_bridge_before_application_script():
     html = read_page("index.html")
     bridge = '<script src="/api/plugin/page/bridge-sdk.js"></script>'
-    app = '<script src="./app.js?v=0.8.2-1"></script>'
+    app = '<script src="./app.js?v=0.8.3-1"></script>'
     assert bridge in html
     assert app in html
     assert html.index(bridge) < html.index(app)
+
+
+def test_page_uses_incremented_asset_cache_busters():
+    html = read_page("index.html")
+    for asset in ("style.css", "series-ui.css", "series-ui.js", "app.js"):
+        assert f"{asset}?v=0.8.3-1" in html
 
 
 def test_page_exposes_join_review_api_contract_and_scoped_fields():
@@ -321,7 +327,7 @@ def test_large_lists_use_client_side_progressive_rendering():
     js = read_page("app.js")
     css = read_page("style.css")
     assert "const PAGE_SIZE = window.matchMedia" in js
-    assert "const progressiveState = { requests: PAGE_SIZE, groups: PAGE_SIZE, targets: PAGE_SIZE };" in js
+    assert "const progressiveState = { requests: PAGE_SIZE, history: PAGE_SIZE, groups: PAGE_SIZE, targets: PAGE_SIZE };" in js
     assert "function progressiveFooter(" in js
     assert "function handleProgressiveClick(" in js
     assert "data-show-more" in js
@@ -331,6 +337,29 @@ def test_large_lists_use_client_side_progressive_rendering():
     assert "request-status-filter" in js
     assert ".progressive-actions" in css
     assert ".progressive-row td" in css
+
+
+def test_pending_requests_use_dual_audit_columns_and_summary_filters():
+    html = read_page("index.html")
+    js = read_page("app.js")
+    css = read_page("style.css")
+
+    assert 'class="audit-columns"' in html
+    assert 'id="requests-list"' in html
+    assert 'id="history-requests-list"' in html
+    assert "已处理（今天）" in html
+    assert 'id="request-history-mode"' in html
+    for chip in ("pending", "approved", "rejected", "platform_error"):
+        assert f'data-request-chip="{chip}"' in html
+    for status in ("approved", "rejected", "expired"):
+        assert f'<option value="{status}">' in html
+    assert "function renderHistoryItem(request)" in js
+    assert "request.review_reason" in js
+    assert "request.processed_at" in js
+    assert "function updateRequestChips()" in js
+    assert "requestHistoryAll" in js
+    assert ".audit-columns" in css
+    assert ".audit-history-item" in css
 
 
 def test_targets_and_groups_have_filters_and_reset_on_full_load():

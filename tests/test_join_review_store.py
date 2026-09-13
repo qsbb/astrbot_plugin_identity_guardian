@@ -160,6 +160,8 @@ def test_request_public_projection_never_exposes_flag_or_internal_error(tmp_path
     assert public["nickname"] == "未知"
     assert public["level"] == "未知"
     assert public["answer"] == "2"
+    assert public["processed_at"] == 0.0
+    assert public["review_reason"] == ""
     assert "answer" not in hidden_answer
     for forbidden in ("flag", "platform_error", "notified_targets"):
         assert forbidden not in public
@@ -179,6 +181,22 @@ def test_target_group_roundtrip_and_invitation_projection(tmp_path):
     public = invite.to_public_dict()
     assert public["request_kind"] == "invitation"
     assert "flag" not in public
+
+
+def test_legacy_request_without_review_fields_loads_with_safe_defaults(tmp_path):
+    store = JoinReviewStore(tmp_path)
+    request = _add(store)
+    payload = json.loads((tmp_path / "join_review.json").read_text("utf-8"))
+    payload["requests"][0].pop("processed_at", None)
+    payload["requests"][0].pop("review_reason", None)
+    (tmp_path / "join_review.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    reloaded = JoinReviewStore(tmp_path)
+    loaded = run(reloaded.get_request(request.request_id))
+
+    assert loaded is not None
+    assert loaded.processed_at == 0.0
+    assert loaded.review_reason == ""
 
 
 def test_request_text_limits_and_event_deduplication(tmp_path):
@@ -224,6 +242,8 @@ def test_successful_action_transitions_only_after_platform_success(tmp_path):
         )
     )
     assert updated.status == "approved"
+    assert updated.processed_at > 0
+    assert updated.review_reason == ""
     assert calls == [("onebot-secret-flag", "add")]
     with pytest.raises(RequestNotActionable, match="already_processed"):
         run(store.claim_request(request.request_id))
@@ -242,6 +262,8 @@ def test_platform_failure_is_not_false_success_and_can_retry(tmp_path):
     )
     assert failed.status == "platform_error"
     assert failed.platform_error == "api unavailable"
+    assert failed.processed_at == 0.0
+    assert failed.review_reason == ""
     assert "platform_error" not in failed.to_public_dict()
 
     retried = run(
@@ -249,9 +271,13 @@ def test_platform_failure_is_not_false_success_and_can_retry(tmp_path):
             request.request_id,
             status="rejected",
             platform_action=lambda _request: True,
+            review_reason="资料不完整",
         )
     )
     assert retried.status == "rejected"
+    assert retried.review_reason == "资料不完整"
+    assert retried.processed_at > 0
+    assert retried.to_public_dict()["review_reason"] == "资料不完整"
 
 
 def test_action_started_before_expiry_records_actual_platform_success(tmp_path):
@@ -371,6 +397,7 @@ def test_final_requests_cannot_claim_delivery_or_add_push_refs(tmp_path, final_s
         )
 
     assert request.status == final_status
+    assert request.processed_at > 0
     assert run(store.claim_notification(request.request_id, "push:30001")) is None
     assert run(store.record_push_ref(request.request_id, "30001", "1001")) is False
 

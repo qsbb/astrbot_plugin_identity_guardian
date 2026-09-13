@@ -33,6 +33,7 @@ MAX_NICKNAME_LENGTH = 128
 MAX_LEVEL_LENGTH = 64
 MAX_FLAG_LENGTH = 4096
 MAX_ERROR_LENGTH = 512
+MAX_REVIEW_REASON_LENGTH = 256
 MAX_SPECIFIED_GROUPS = 100
 PUSH_STYLES = frozenset({"formatted", "natural"})
 MAX_PUSH_REFS = 200
@@ -384,6 +385,8 @@ class JoinRequest:
     expires_at: float = 0.0
     status: str = "pending"
     platform_error: str = ""
+    processed_at: float = 0.0
+    review_reason: str = ""
     notified_targets: tuple[str, ...] = ()
     # 推送消息映射：{"group_id": 推送群, "message_id": 推送消息 ID}，
     # 供群内引用回复审批定位申请；随申请本身过期（expires_at）。
@@ -408,6 +411,8 @@ class JoinRequest:
         expires_at: Any,
         status: Any = "pending",
         platform_error: Any = "",
+        processed_at: Any = 0.0,
+        review_reason: Any = "",
         notified_targets: Iterable[Any] = (),
         push_refs: Iterable[Any] = (),
     ) -> JoinRequest:
@@ -453,6 +458,10 @@ class JoinRequest:
             platform_error=_normalize_optional_text(
                 platform_error, "platform_error", MAX_ERROR_LENGTH
             ),
+            processed_at=_normalize_timestamp(processed_at, "processed_at"),
+            review_reason=_normalize_optional_text(
+                review_reason, "review_reason", MAX_REVIEW_REASON_LENGTH
+            ),
             notified_targets=target_values,
             push_refs=ref_values,
         )
@@ -479,6 +488,8 @@ class JoinRequest:
             "updated_at": self.updated_at,
             "expires_at": self.expires_at,
             "status": self.status,
+            "processed_at": self.processed_at,
+            "review_reason": self.review_reason,
         }
         if include_answer:
             value["answer"] = self.answer
@@ -939,6 +950,7 @@ class JoinReviewStore:
                     status="expired",
                     updated_at=now,
                     platform_error="",
+                    processed_at=now,
                 )
                 self._request_claims.pop(request_id, None)
                 changed = True
@@ -984,6 +996,7 @@ class JoinReviewStore:
         platform_succeeded: bool,
         status: Literal["approved", "rejected"],
         error: Any = "",
+        review_reason: Any = "",
     ) -> JoinRequest:
         if status not in {"approved", "rejected"}:
             raise ValidationError("invalid_final_status")
@@ -999,11 +1012,20 @@ class JoinReviewStore:
             now = self._clock()
             if platform_succeeded:
                 updated = self._replace_request(
-                    request, status=status, updated_at=now, platform_error=""
+                    request,
+                    status=status,
+                    updated_at=now,
+                    platform_error="",
+                    processed_at=now,
+                    review_reason=review_reason,
                 )
             elif request.expires_at <= now:
                 updated = self._replace_request(
-                    request, status="expired", updated_at=now, platform_error=""
+                    request,
+                    status="expired",
+                    updated_at=now,
+                    platform_error="",
+                    processed_at=now,
                 )
             else:
                 updated = self._replace_request(
@@ -1033,6 +1055,7 @@ class JoinReviewStore:
         platform_succeeded: bool,
         status: Literal["approved", "rejected"],
         error: Any = "",
+        review_reason: Any = "",
     ) -> JoinRequest:
         """Compatibility spelling for :meth:`finish_request`."""
         return await self.finish_request(
@@ -1040,6 +1063,7 @@ class JoinReviewStore:
             platform_succeeded=platform_succeeded,
             status=status,
             error=error,
+            review_reason=review_reason,
         )
 
     async def release_request(self, claim: RequestClaim) -> bool:
@@ -1055,6 +1079,7 @@ class JoinReviewStore:
         *,
         status: Literal["approved", "rejected"],
         platform_action: Callable[[JoinRequest], Awaitable[Any] | Any],
+        review_reason: Any = "",
     ) -> JoinRequest:
         """Claim, perform the platform action once, and commit its outcome.
 
@@ -1087,6 +1112,7 @@ class JoinReviewStore:
             platform_succeeded=succeeded,
             status=status,
             error=error,
+            review_reason=review_reason,
         )
 
     async def claim_notification(

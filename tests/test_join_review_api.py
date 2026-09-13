@@ -357,13 +357,17 @@ def test_reject_route_rechecks_permission_and_commits_only_after_onebot_success(
         )
     )
     monkeypatch.setattr(
-        api_module, "request", FakeRequest({"request_id": request.request_id})
+        api_module,
+        "request",
+        FakeRequest({"request_id": request.request_id, "reason": "资料不完整"}),
     )
 
     result = response_data(run(api.reject()))
 
     assert result["success"] is True
     assert result["data"]["request"]["status"] == "rejected"
+    assert result["data"]["request"]["review_reason"] == "资料不完整"
+    assert result["data"]["request"]["processed_at"] > 0
     assert "flag" not in result["data"]["request"]
     action = next(item for item in bot.calls if item[0] == "set_group_add_request")
     assert action[1]["approve"] is False

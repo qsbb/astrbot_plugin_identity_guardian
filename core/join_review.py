@@ -477,6 +477,7 @@ class JoinReviewRuntime:
             request_id,
             status="approved" if approve else "rejected",
             platform_action=platform_action,
+            review_reason=_bounded_text(reason, 256) if not approve else "",
         )
 
 
