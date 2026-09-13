@@ -80,6 +80,35 @@ function $all(selector, root = document) {
   return Array.from(root.querySelectorAll(selector));
 }
 
+const PLATFORM_LABELS = {
+  aiocqhttp: "QQ 机器人平台",
+  qq_official: "QQ 官方机器人",
+  telegram: "Telegram",
+  discord: "Discord",
+  lark: "飞书",
+  dingtalk: "钉钉",
+  wecom: "企业微信",
+};
+
+const BOT_ROLE_LABELS = {
+  owner: "群主",
+  admin: "管理员",
+  member: "普通成员",
+  unknown: "未知身份",
+};
+
+function platformLabel(platformId) {
+  const key = String(platformId || "").trim();
+  if (!key) return "未标注平台";
+  return PLATFORM_LABELS[key] || `其它平台（${key}）`;
+}
+
+function botRoleLabel(role) {
+  const key = String(role || "").trim().toLowerCase();
+  if (!key) return "未知身份";
+  return BOT_ROLE_LABELS[key] || `其它身份（${key}）`;
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({
     "&": "&amp;",
@@ -342,7 +371,7 @@ function renderGroupRow(group) {
   return `<tr data-group-key="${escapeHtml(key)}" class="${unavailable ? "row-disabled" : ""}${group.pinned ? " row-pinned" : ""}">
     <td class="select-cell" data-label="选择"><input type="checkbox" data-select-group aria-label="选择群 ${escapeHtml(group.group_id)}"${selected ? " checked" : ""}${fieldsDisabled ? " disabled" : ""}></td>
     <td class="group-cell" data-label="群"><button class="group-link" type="button" data-open-settings aria-haspopup="dialog" aria-expanded="${popoverOpen}"${fieldsDisabled ? " disabled" : ""} aria-label="配置群 ${escapeHtml(group.group_id)}">${escapeHtml(group.group_name)}</button><span class="secondary-value">${escapeHtml(group.group_id)}</span></td>
-    <td data-label="Bot / 权限"><span class="primary-value">${escapeHtml(botLabel)}</span><span class="secondary-value">${escapeHtml(group.bot_role)} · ${escapeHtml(group.platform_id)}</span>${permissionBadge(group)}</td>
+    <td data-label="Bot / 权限"><span class="primary-value">${escapeHtml(botLabel)}</span><span class="secondary-value">${escapeHtml(botRoleLabel(group.bot_role))} · ${escapeHtml(platformLabel(group.platform_id))}</span>${permissionBadge(group)}</td>
     <td data-label="状态">${statusMarkup}</td>
     <td data-label="操作"><button class="button compact" type="button" data-open-settings aria-haspopup="dialog" aria-expanded="${popoverOpen}"${fieldsDisabled ? " disabled" : ""}>设置</button></td>
   </tr>`;
@@ -731,7 +760,7 @@ function renderRequestCard(request) {
       <time class="request-time">${escapeHtml(formatTime(request.created_at))}</time>
     </div>
     <dl class="request-grid">
-      <div class="request-field"><dt>Bot 平台</dt><dd>${escapeHtml(request.platform_id || "未知")}</dd></div>
+      <div class="request-field"><dt>Bot 平台</dt><dd>${escapeHtml(platformLabel(request.platform_id))}</dd></div>
       ${invitation
     ? '<div class="request-field request-invitation-note"><dt>类型</dt><dd>收到群邀请；默认不会自动接受</dd></div>'
     : `<div class="request-field"><dt>问题</dt><dd>${escapeHtml(question)}</dd></div>
@@ -857,7 +886,7 @@ function renderTargetGroups() {
     const joinedLabel = target.joined ? `已加入 · ${target.bot_role || "未知身份"}` : "尚未加入，等待邀请";
     const key = groupKey(target.platform_id, target.group_id);
     return `<div class="target-group-row" data-target-key="${escapeHtml(key)}">
-      <div><strong>${escapeHtml(target.group_name || "未知群名")}</strong><span class="secondary-value">${escapeHtml(target.group_id)} · ${escapeHtml(target.platform_id)}</span></div>
+      <div><strong>${escapeHtml(target.group_name || "未知群名")}</strong><span class="secondary-value">${escapeHtml(target.group_id)} · ${escapeHtml(platformLabel(target.platform_id))}</span></div>
       <div class="target-group-meta"><span class="status-badge ${target.joined ? "good" : "warn"}">${escapeHtml(joinedLabel)}</span><button class="button compact danger-quiet" type="button" data-remove-target>移除</button></div>
     </div>`;
   }).join("") + progressiveFooter("targets", filtered.length, shownTargets.length);

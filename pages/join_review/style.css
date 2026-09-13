@@ -919,8 +919,11 @@ body[data-series-ui] button[aria-busy="true"]::before {
   position: sticky;
   top: 0;
   z-index: 20;
-  padding: 10px 0;
-  background: rgba(255,255,255,.94);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  scroll-margin-top: 14px;
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 8px 18px rgba(77, 84, 142, .08);
 }
 
 /* 键盘快速审批：提示 + 当前选中卡片 */
@@ -939,4 +942,28 @@ body[data-series-ui] button[aria-busy="true"]::before {
 
 @media (max-width: 760px) {
   .keyboard-hint { display: none; }
+}
+
+/* 筛选栏：标签+控件竖排，宽屏自适应、窄屏整行；键盘提示单独一行 */
+body[data-series-ui] .si-filter-bar > label {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 190px;
+  min-width: 0;
+}
+
+body[data-series-ui] .si-filter-bar > label > span {
+  color: var(--si-muted);
+  font-size: 12px;
+}
+
+body[data-series-ui] .si-filter-bar .keyboard-hint {
+  flex: 1 1 100%;
+  align-self: flex-start;
+  white-space: normal;
+}
+
+@media (max-width: 760px) {
+  body[data-series-ui] .batch-toolbar { position: static; }
+  body[data-series-ui] .si-filter-bar > label { flex: 1 1 100%; }
 }
