@@ -425,15 +425,20 @@ class IdentityGuardianPlugin(Star):
     def diagnostic_log_contract(self) -> dict[str, object]:
         return {
             "name": "series.diagnostics",
-            "version": "1.0",
+            "version": "1.1",
             "series_id": "ningxin_suxi",
             "plugin_id": PLUGIN_NAME,
             "plugin_name": "序",
-            "capabilities": ("read", "clear", "read_events", "clear_events"),
+            "capabilities": ("read", "clear", "read_state", "read_events", "clear_events"),
             "storage": "memory_only",
             "astrbot_log_propagation": False,
         }
 
+    def diagnostic_state(self) -> dict[str, Any]:
+        """series.diagnostics@1.1 可选能力：返回当前联动状态（纯读，不产生事件）。"""
+        from .series_diagnostics import diagnostic_state_payload
+
+        return diagnostic_state_payload()
     def diagnostic_events(self, after_seq: int = 0, limit: int = 200) -> dict[str, Any]:
         return read_diagnostic_events(after_seq=after_seq, limit=limit)
 

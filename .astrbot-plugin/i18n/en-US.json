@@ -1,4 +1,52 @@
 {
+  "config": {
+    "邀请 Bot": {
+      "invitation_without_relationship_policy": {
+        "labels": [
+          "Auto-approve",
+          "Auto-reject"
+        ]
+      }
+    },
+    "处罚": {
+      "auto_confirm_threshold": {
+        "labels": [
+          "Warn",
+          "Short mute",
+          "Long mute",
+          "Delete message",
+          "Kick"
+        ]
+      }
+    },
+    "兼容": {
+      "join_audit_mode": {
+        "labels": [
+          "Off",
+          "Auto-approve only",
+          "Notify only"
+        ]
+      }
+    },
+    "联动": {
+      "active_learner_scope": {
+        "labels": [
+          "Current group",
+          "Global"
+        ]
+      }
+    },
+    "高级": {
+      "log_level": {
+        "labels": [
+          "Debug",
+          "Info",
+          "Warning",
+          "Error"
+        ]
+      }
+    }
+  },
   "pages": {
     "join_review": {
       "title": "Join Review",

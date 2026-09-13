@@ -33,6 +33,24 @@ const state = {
   popoverKey: null,
 };
 
+let settingsBaseline = null;
+const showUnsavedConfirm = window.SeriesUI.confirm;
+
+function hasUnsavedChanges() {
+  return settingsFormHasUnsavedChanges() || popoverHasUnsavedChanges();
+}
+
+async function confirmDiscardChanges() {
+  if (!hasUnsavedChanges()) return true;
+  return (await showUnsavedConfirm({
+    title: "未保存的修改",
+    message: "当前页面还有未保存的改动，离开将放弃这些改动。",
+    confirmText: "放弃修改",
+    cancelText: "继续编辑",
+    danger: true,
+  })) === true;
+}
+
 const API_ERROR_MESSAGES = {
   unauthorized: "当前 Dashboard 会话无权执行此操作",
   forbidden: "当前 Bot 或账号没有该群的审核权限",
@@ -627,11 +645,11 @@ function positionGroupPopover(anchor) {
   popover.style.top = `${top}px`;
 }
 
-function openGroupPopover(key, anchor) {
+async function openGroupPopover(key, anchor) {
   const group = state.groupMap.get(key);
   if (!group) return;
   if (state.popoverKey === key) {
-    closeGroupPopover();
+    await closeGroupPopover();
     return;
   }
   if (popoverTrigger && document.contains(popoverTrigger)) {
@@ -649,7 +667,11 @@ function openGroupPopover(key, anchor) {
   $(".editable-control", popover)?.focus();
 }
 
-function closeGroupPopover() {
+async function closeGroupPopover(options = {}) {
+  const force = options === true || options?.force === true;
+  if (!force && popoverHasUnsavedChanges()) {
+    if (!await confirmDiscardChanges()) return false;
+  }
   const trigger = popoverTrigger;
   state.popoverKey = null;
   popoverTrigger = null;
@@ -661,6 +683,7 @@ function closeGroupPopover() {
     trigger.setAttribute("aria-expanded", "false");
     trigger.focus({ preventScroll: true });
   }
+  return true;
 }
 
 // 行数据刷新后同步已打开的悬浮窗内容；群消失则关闭。
@@ -1177,6 +1200,102 @@ function configPayloadFromForm(container) {
   };
 }
 
+function settingsFormHasUnsavedChanges() {
+  if (!settingsBaseline) return false;
+  const provider = $("#settings-audit-provider");
+  const recall = $("#settings-recall");
+  if (!provider || !recall) return false;
+  return String(provider.value || "") !== String(settingsBaseline.audit_llm_provider || "")
+    || Boolean(recall.checked) !== Boolean(settingsBaseline.enable_active_learner_recall);
+}
+
+function captureSettingsBaseline() {
+  const provider = $("#settings-audit-provider");
+  const recall = $("#settings-recall");
+  settingsBaseline = provider && recall
+    ? {
+      audit_llm_provider: String(provider.value || ""),
+      enable_active_learner_recall: Boolean(recall.checked),
+    }
+    : null;
+}
+
+function restoreSettingsForm() {
+  if (!settingsBaseline) return;
+  const provider = $("#settings-audit-provider");
+  const recall = $("#settings-recall");
+  if (provider) provider.value = settingsBaseline.audit_llm_provider;
+  if (recall) recall.checked = settingsBaseline.enable_active_learner_recall;
+  $("#settings-error")?.classList.add("hidden");
+}
+
+function groupIdsForDirty(value) {
+  try {
+    return parseGroupIdList(value, "");
+  } catch (_error) {
+    return Array.from(new Set(
+      String(value || "").split(/[,，;；\s]+/).map((item) => item.trim()).filter(Boolean),
+    ));
+  }
+}
+
+function joinQuestionsForDirty(container) {
+  return $all("[data-jq-item]", container).map((item) => {
+    const question = $("[data-jq-question]", item).value.trim();
+    const answers = Array.from(new Set(
+      $("[data-jq-answers]", item).value
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    ));
+    return { question, answers };
+  }).filter((item) => item.question || item.answers.length);
+}
+
+function popoverFormValue(container) {
+  return {
+    auto_audit_enabled: Boolean($("[data-field='auto_audit_enabled']", container)?.checked),
+    review_send_enabled: Boolean($("[data-field='review_send_enabled']", container)?.checked),
+    notify_target: String($("[data-field='notify_target']", container)?.value || ""),
+    specified_group_ids: groupIdsForDirty($("[data-field='specified_group_ids']", container)?.value || ""),
+    include_answer: Boolean($("[data-field='include_answer']", container)?.checked),
+    pinned: Boolean($("[data-field='pinned']", container)?.checked),
+    push_group_ids: groupIdsForDirty($("[data-field='push_group_ids']", container)?.value || ""),
+    push_style: String($("[data-field='push_style']", container)?.value || ""),
+    join_questions: joinQuestionsForDirty(container),
+  };
+}
+
+function groupStoredValue(group) {
+  return {
+    auto_audit_enabled: Boolean(group.auto_audit_enabled),
+    review_send_enabled: Boolean(group.review_send_enabled),
+    notify_target: String(group.notify_target || "target_group"),
+    specified_group_ids: Array.from(new Set((group.specified_group_ids || []).map(String))),
+    include_answer: group.include_answer !== false,
+    pinned: Boolean(group.pinned),
+    push_group_ids: Array.from(new Set((group.push_group_ids || []).map(String))),
+    push_style: String(group.push_style || "natural"),
+    join_questions: (group.join_questions || []).map((item) => ({
+      question: String(item.question || "").trim(),
+      answers: Array.from(new Set((item.answers || []).map((answer) => String(answer).trim()).filter(Boolean))),
+    })),
+  };
+}
+
+function popoverHasUnsavedChanges() {
+  if (!state.popoverKey) return false;
+  const popover = popoverElement();
+  const group = state.groupMap.get(state.popoverKey);
+  if (!popover || !group || popover.classList.contains("hidden")) return false;
+  return JSON.stringify(popoverFormValue(popover)) !== JSON.stringify(groupStoredValue(group));
+}
+
+function discardUnsavedChanges() {
+  restoreSettingsForm();
+  if (state.popoverKey) closeGroupPopover({ force: true });
+}
+
 function showFormError(container, error) {
   const element = $("[data-row-error]", container);
   if (element) element.textContent = error?.message || String(error || "");
@@ -1241,6 +1360,10 @@ async function loadAll() {
 }
 
 async function refreshJoinedGroups() {
+  if (popoverHasUnsavedChanges()) {
+    if (!await confirmDiscardChanges()) return;
+    await closeGroupPopover({ force: true });
+  }
   resetProgressive("groups", "targets");
   const button = $("#refresh-joined");
   if (button.getAttribute("aria-busy") === "true") return;
@@ -1287,6 +1410,7 @@ async function loadSettings() {
     recall.checked = data?.enable_active_learner_recall === true;
     // 模型列表不可用时只保留默认与当前生效值，并给出提示。
     $("#settings-providers-hint").classList.toggle("hidden", providers.length > 0);
+    captureSettingsBaseline();
     errorEl.classList.add("hidden");
   } catch (error) {
     errorEl.textContent = error?.message || String(error || "读取设置失败");
@@ -1305,6 +1429,7 @@ async function saveSettings() {
       audit_llm_provider: $("#settings-audit-provider").value,
       enable_active_learner_recall: $("#settings-recall").checked,
     });
+    captureSettingsBaseline();
     showStatus("全局设置已保存，立即生效。");
   } catch (error) {
     errorEl.textContent = error?.message || String(error || "保存失败");
@@ -1428,7 +1553,12 @@ function syncToggleLabel(input) {
   else if (field === "review_send_enabled") label.textContent = checked ? "发送审核：开启" : "发送审核：关闭";
 }
 
-function switchPageTab(name) {
+async function switchPageTab(name) {
+  const current = document.querySelector("[data-page-tab].active")?.dataset.pageTab;
+  if (current && current !== name) {
+    if (!await confirmDiscardChanges()) return false;
+    discardUnsavedChanges();
+  }
   const tabs = [...document.querySelectorAll("[data-page-tab]")];
   const panels = [...document.querySelectorAll("[data-page-panel]")];
   tabs.forEach((tab) => {
@@ -1440,13 +1570,14 @@ function switchPageTab(name) {
   panels.forEach((panel) => {
     panel.hidden = panel.dataset.pagePanel !== name;
   });
+  return true;
 }
 
 function bindPageTabs() {
   const tabs = [...document.querySelectorAll("[data-page-tab]")];
   tabs.forEach((tab, index) => {
     tab.addEventListener("click", () => switchPageTab(tab.dataset.pageTab));
-    tab.addEventListener("keydown", (event) => {
+    tab.addEventListener("keydown", async (event) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
       let next = index;
@@ -1454,8 +1585,7 @@ function bindPageTabs() {
       if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
       if (event.key === "Home") next = 0;
       if (event.key === "End") next = tabs.length - 1;
-      switchPageTab(tabs[next].dataset.pageTab);
-      tabs[next].focus();
+      if (await switchPageTab(tabs[next].dataset.pageTab)) tabs[next].focus();
     });
   });
 }
@@ -1719,6 +1849,12 @@ function handleRequestKeyboard(event) {
   highlightRequestCard(card.dataset.requestId, { scroll: false });
   button.click();
 }
+
+window.addEventListener("beforeunload", (event) => {
+  if (!hasUnsavedChanges()) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 
 async function init() {
   bindEvents();

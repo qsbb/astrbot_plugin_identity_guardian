@@ -34,6 +34,7 @@
     "type": "string",
     "default": "reject",
     "options": ["approve", "reject"],
+    "labels": ["自动同意", "自动拒绝"],
     "hint": "未安装情时不读取好感度，统一按此设置自动接受或自动拒绝；页面人工同意不受影响。"
   },
   "quest_session_owner_bindings": {
@@ -104,6 +105,7 @@
     "default": "mute_short",
     "obvious_hint": true,
     "options": ["warn", "mute_short", "mute_long", "delete", "kick"],
+    "labels": ["警告", "短期禁言", "长期禁言", "撤回消息", "移出群聊"],
     "hint": "审核判定违规后，不超过此档的处罚直接自动执行，超过的降级为警告。档位由轻到重：warn < mute_short < mute_long < delete < kick。风险：设为 delete 或 kick 后，命中审核即可自动撤消息甚至踢人，请谨慎选择。"
   },
   "blacklist_users": {
@@ -151,6 +153,7 @@
     "default": "off",
     "obvious_hint": true,
     "options": ["off", "approve_only", "notify_only"],
+    "labels": ["关闭", "仅自动同意", "仅通知"],
     "hint": "仅保留旧配置兼容，不会自动应用到任何群。请在插件的“入群审核”页面选择具体 Bot 和群后显式迁移；新群和未配置群的两个开关始终默认关闭。"
   },
   "join_questions": {
@@ -179,6 +182,7 @@
     "type": "string",
     "default": "group",
     "options": ["group", "global"],
+    "labels": ["当前群", "全局"],
     "hint": "group 只检索当前群的知识；global 检索全局共享知识，可能把其他群的内容用于本群审核判断。"
   },
   "manual_threshold": {
@@ -284,6 +288,7 @@
     "type": "string",
     "default": "INFO",
     "options": ["DEBUG", "INFO", "WARNING", "ERROR"],
+    "labels": ["调试", "信息", "警告", "错误"],
     "hint": "日常使用 INFO；排查问题时临时改为 DEBUG，用完改回，避免日志量过大。"
   }
 }
