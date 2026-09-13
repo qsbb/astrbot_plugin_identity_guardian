@@ -1,4 +1,10 @@
 ## [Unreleased]
+## 0.8.6 - 2026-09-14
+
+### 修复
+
+- 统一接管入口修复：`SeriesControlAdapter` 补上 `set_mode(mode)`。核在读取 schema/snapshot 前会先调用插件的 `series_control_set_mode`，此前转发到不存在的方法会抛 `AttributeError`，导致核能力页「关系与身份」整域显示「独立配置 / 读取失败」、卡片开关变灰。
+- 模块级 `set_mode(plugin, mode)` 改为委托适配器方法，消除两处实现漂移；新增两条回归测试（适配器行为 + 入口必须命中真实方法）。
 
 ## 0.8.5 - 2026-09-14
 

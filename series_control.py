@@ -103,6 +103,16 @@ class SeriesControlAdapter:
         if callable(hook):
             hook(values)
 
+    def set_mode(self, mode: str) -> dict[str, Any]:
+        """切换接管模式（核在读取 schema/snapshot 前会调用）。
+
+        缺少这个方法会让核侧统一接管整条链路报 AttributeError，
+        能力页表现为“独立配置 / 读取失败”。
+        """
+        self._mode = mode if mode in {"native", "managed"} else "native"
+        self.sync_runtime()
+        return {"success": True, "mode": self._mode}
+
     def series_control_contract(self) -> dict[str, Any]:
         return {
             "name": CONTRACT_NAME,
@@ -302,6 +312,5 @@ def reset(plugin: Any, fields=None, *, expected_revision=None) -> dict[str, Any]
 
 
 def set_mode(plugin: Any, mode: str) -> dict[str, Any]:
-    plugin._series_control._mode = mode if mode in {"native", "managed"} else "native"
-    plugin._series_control.sync_runtime()
-    return {"success": True, "mode": plugin._series_control._mode}
+    """模块级兼容入口：统一委托给适配器，避免两处实现漂移。"""
+    return plugin._series_control.set_mode(mode)

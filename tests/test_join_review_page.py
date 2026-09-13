@@ -12,7 +12,7 @@ def read_page(name: str) -> str:
 def test_page_loads_bridge_before_application_script():
     html = read_page("index.html")
     bridge = '<script src="/api/plugin/page/bridge-sdk.js"></script>'
-    app = '<script src="./app.js?v=0.8.5-1"></script>'
+    app = '<script src="./app.js?v=0.8.6-1"></script>'
     assert bridge in html
     assert app in html
     assert html.index(bridge) < html.index(app)
@@ -21,7 +21,7 @@ def test_page_loads_bridge_before_application_script():
 def test_page_uses_incremented_asset_cache_busters():
     html = read_page("index.html")
     for asset in ("style.css", "series-ui.css", "series-ui.js", "app.js"):
-        assert f"{asset}?v=0.8.5-1" in html
+        assert f"{asset}?v=0.8.6-1" in html
 
 
 def test_page_exposes_join_review_api_contract_and_scoped_fields():
