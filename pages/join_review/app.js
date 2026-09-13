@@ -3,8 +3,13 @@
 let bridge = null;
 let popoverTrigger = null;
 const API_PREFIX = "join-review";
+const PAGE_SIZE = window.matchMedia("(max-width: 720px)").matches ? 10 : 20;
+const progressiveState = { requests: PAGE_SIZE, groups: PAGE_SIZE, targets: PAGE_SIZE };
 // 仅用于渲染层：当前展开行内驳回原因输入的申请 id。
 let rejectConfirmId = null;
+let requestStatusFilter = "";
+let requestGroupFilter = "";
+let requestQuery = "";
 
 const state = {
   joinedGroups: [],
@@ -277,8 +282,13 @@ function setButtonBusy(button, busy, busyLabel = "处理中…") {
 }
 
 function showPageError(error) {
+  const message = error?.message || String(error || "操作失败");
+  if (window.SeriesUI?.toast) {
+    window.SeriesUI.toast(message, "error");
+    return;
+  }
   const element = $("#page-error");
-  element.textContent = error?.message || String(error || "操作失败");
+  element.textContent = message;
   element.classList.remove("hidden");
   clearTimeout(showPageError.timer);
   showPageError.timer = setTimeout(() => element.classList.add("hidden"), 6000);
@@ -290,6 +300,10 @@ function clearPageError() {
 }
 
 function showStatus(message) {
+  if (window.SeriesUI?.toast) {
+    window.SeriesUI.toast(message, "info");
+    return;
+  }
   const element = $("#page-status");
   element.textContent = message;
   element.classList.remove("hidden");
@@ -333,11 +347,12 @@ function renderGroupRow(group) {
 function renderGroups() {
   mergeGroups();
   const body = $("#groups-body");
+  const shownGroups = state.groups.slice(0, progressiveState.groups);
   body.innerHTML = state.groups.length
-    ? state.groups.map(renderGroupRow).join("")
+    ? shownGroups.map(renderGroupRow).join("") + progressiveFooter("groups", state.groups.length, shownGroups.length, true)
     : '<tr class="empty-row"><td colspan="5">当前 aiocqhttp Bot 暂无可显示的群，请刷新已加入群。</td></tr>';
   const configuredCount = state.groups.filter((group) => group.configured).length;
-  $("#group-summary").textContent = `共 ${state.groups.length} 个群，${configuredCount} 个已配置；点群名打开设置悬浮窗，未配置群默认关闭两个开关。`;
+  $("#group-summary").textContent = `共 ${state.groups.length} 个群，${configuredCount} 个已配置；列表每批显示 ${PAGE_SIZE} 个，全选作用于全部群。`;
   $("#legacy-notice").classList.toggle("hidden", !state.legacyAvailable);
   updateBatchUi();
   updateStats();
@@ -700,13 +715,73 @@ function renderRequestCard(request) {
   </article>`;
 }
 
+function progressiveFooter(kind, total, shown, table = false) {
+  if (total <= PAGE_SIZE) return "";
+  const remaining = Math.max(0, total - shown);
+  const buttons = [
+    remaining > 0 ? `<button type="button" class="button compact" data-show-more>显示更多（剩余 ${remaining} 条）</button>` : "",
+    shown > PAGE_SIZE ? '<button type="button" class="button compact secondary" data-collapse>收起</button>' : "",
+  ].join("");
+  if (table) {
+    return `<tr class="progressive-row"><td colspan="5"><div class="progressive-actions" data-progressive="${kind}">${buttons}</div></td></tr>`;
+  }
+  return `<div class="progressive-actions" data-progressive="${kind}">${buttons}</div>`;
+}
+
+function resetProgressive(...kinds) {
+  kinds.forEach((kind) => { progressiveState[kind] = PAGE_SIZE; });
+}
+
+function renderProgressiveKind(kind) {
+  if (kind === "requests") renderRequests();
+  else if (kind === "groups") renderGroups();
+  else if (kind === "targets") renderTargetGroups();
+}
+
+function handleProgressiveClick(event, kind) {
+  const button = event.target.closest("[data-show-more], [data-collapse]");
+  if (!button) return false;
+  if (button.hasAttribute("data-show-more")) progressiveState[kind] += PAGE_SIZE;
+  else progressiveState[kind] = PAGE_SIZE;
+  renderProgressiveKind(kind);
+  return true;
+}
+
+function filteredRequests() {
+  const query = requestQuery.trim().toLowerCase();
+  return state.requests.filter((request) => {
+    const status = String(request.status || "pending");
+    if (requestStatusFilter && status !== requestStatusFilter) return false;
+    if (requestGroupFilter && groupKey(request.platform_id, request.group_id) !== requestGroupFilter) return false;
+    if (query && !`${request.nickname || ""} ${request.user_id || ""}`.toLowerCase().includes(query)) return false;
+    return true;
+  });
+}
+
+function renderRequestGroupOptions() {
+  const select = $("#request-group-filter");
+  if (!select) return;
+  const current = select.value;
+  const options = Array.from(new Map(state.requests.map((request) => [
+    groupKey(request.platform_id, request.group_id),
+    request.group_name || request.group_id || "未知群",
+  ]).filter(([key]) => key)));
+  select.innerHTML = '<option value="">全部群</option>' + options
+    .map(([key, label]) => `<option value="${escapeHtml(key)}">${escapeHtml(label)}</option>`)
+    .join("");
+  if (options.some(([key]) => key === current)) select.value = current;
+}
+
 function renderRequests() {
+  renderRequestGroupOptions();
   const list = $("#requests-list");
-  list.innerHTML = state.requests.length
-    ? state.requests.map(renderRequestCard).join("")
-    : '<p class="empty-state">暂无入群申请。</p>';
-  const actionable = state.requests.filter((request) => ["pending", "platform_error"].includes(String(request.status || "pending"))).length;
-  $("#request-summary").textContent = `${actionable} 条待处理，共 ${state.requests.length} 条记录。`;
+  const filtered = filteredRequests();
+  const shownRequests = filtered.slice(0, progressiveState.requests);
+  list.innerHTML = filtered.length
+    ? shownRequests.map(renderRequestCard).join("") + progressiveFooter("requests", filtered.length, shownRequests.length)
+    : '<p class="empty-state">没有符合当前筛选条件的入群申请。</p>';
+  const actionable = filtered.filter((request) => ["pending", "platform_error"].includes(String(request.status || "pending"))).length;
+  $("#request-summary").textContent = `${actionable} 条待处理，当前显示 ${shownRequests.length}/${filtered.length} 条。`;
   updateStats();
 }
 
@@ -734,14 +809,15 @@ function renderTargetGroups() {
     list.innerHTML = '<p class="empty-state">暂无目标群。添加后才能接收该群审核推送或处理 Bot 邀请。</p>';
     return;
   }
-  list.innerHTML = state.targetGroups.map((target) => {
+  const shownTargets = state.targetGroups.slice(0, progressiveState.targets);
+  list.innerHTML = shownTargets.map((target) => {
     const joinedLabel = target.joined ? `已加入 · ${target.bot_role || "未知身份"}` : "尚未加入，等待邀请";
     const key = groupKey(target.platform_id, target.group_id);
     return `<div class="target-group-row" data-target-key="${escapeHtml(key)}">
       <div><strong>${escapeHtml(target.group_name || "未知群名")}</strong><span class="secondary-value">${escapeHtml(target.group_id)} · ${escapeHtml(target.platform_id)}</span></div>
       <div class="target-group-meta"><span class="status-badge ${target.joined ? "good" : "warn"}">${escapeHtml(joinedLabel)}</span><button class="button compact danger-quiet" type="button" data-remove-target>移除</button></div>
     </div>`;
-  }).join("");
+  }).join("") + progressiveFooter("targets", state.targetGroups.length, shownTargets.length);
 }
 
 function renderInviteGroupOptions() {
@@ -786,6 +862,7 @@ async function inviteTargetMember() {
 }
 
 async function loadTargetGroups() {
+  resetProgressive("targets");
   const payload = await apiGet("target-groups");
   state.targetGroups = listFrom(payload, ["groups", "target_groups", "items"]);
   renderTargetGroups();
@@ -827,7 +904,17 @@ async function addTargetGroup() {
 async function removeTargetGroup(row) {
   const key = row?.dataset.targetKey || "";
   const target = state.targetGroups.find((item) => groupKey(item.platform_id, item.group_id) === key);
-  if (!target || !window.confirm(`确认移除目标群 ${target.group_id}？移除后不会再处理该群的新邀请。`)) return;
+  if (!target) return;
+  const confirmed = window.SeriesUI?.confirm
+    ? await window.SeriesUI.confirm({
+      title: "移除目标群",
+      message: `确认移除目标群 ${target.group_id}？移除后不会再处理该群的新邀请。`,
+      confirmText: "移除",
+      cancelText: "取消",
+      danger: true,
+    })
+    : false;
+  if (!confirmed) return;
   const button = $("[data-remove-target]", row);
   setButtonBusy(button, true, "移除中…");
   try {
@@ -934,6 +1021,7 @@ async function refreshStoredData() {
 
 async function loadAll() {
   clearPageError();
+  resetProgressive("requests", "groups", "targets");
   const [joinedPayload, groupsPayload, requestsPayload, targetsPayload] = await Promise.all([
     apiGet("joined-groups"),
     apiGet("groups"),
@@ -957,6 +1045,7 @@ async function loadAll() {
 }
 
 async function refreshJoinedGroups() {
+  resetProgressive("groups", "targets");
   const button = $("#refresh-joined");
   if (button.getAttribute("aria-busy") === "true") return;
   setButtonBusy(button, true, "刷新中…");
@@ -1131,7 +1220,40 @@ function syncToggleLabel(input) {
   else if (field === "review_send_enabled") label.textContent = checked ? "发送审核：开启" : "发送审核：关闭";
 }
 
+function switchPageTab(name) {
+  const tabs = [...document.querySelectorAll("[data-page-tab]")];
+  const panels = [...document.querySelectorAll("[data-page-panel]")];
+  tabs.forEach((tab) => {
+    const active = tab.dataset.pageTab === name;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  panels.forEach((panel) => {
+    panel.hidden = panel.dataset.pagePanel !== name;
+  });
+}
+
+function bindPageTabs() {
+  const tabs = [...document.querySelectorAll("[data-page-tab]")];
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => switchPageTab(tab.dataset.pageTab));
+    tab.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      let next = index;
+      if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+      if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === "Home") next = 0;
+      if (event.key === "End") next = tabs.length - 1;
+      switchPageTab(tabs[next].dataset.pageTab);
+      tabs[next].focus();
+    });
+  });
+}
+
 function bindEvents() {
+  bindPageTabs();
   $("#refresh-joined").addEventListener("click", refreshJoinedGroups);
   $("#refresh-target-groups").addEventListener("click", async (event) => {
     const button = event.currentTarget;
@@ -1149,11 +1271,28 @@ function bindEvents() {
   $("#add-target-group").addEventListener("click", addTargetGroup);
   $("#invite-target-member").addEventListener("click", inviteTargetMember);
   $("#target-groups-list").addEventListener("click", (event) => {
+    if (handleProgressiveClick(event, "targets")) return;
     const button = event.target.closest("[data-remove-target]");
     if (button) removeTargetGroup(button.closest("[data-target-key]"));
   });
   $("#simulate-run").addEventListener("click", runSimulate);
+  $("#request-status-filter")?.addEventListener("change", (event) => {
+    requestStatusFilter = event.target.value;
+    progressiveState.requests = PAGE_SIZE;
+    renderRequests();
+  });
+  $("#request-group-filter")?.addEventListener("change", (event) => {
+    requestGroupFilter = event.target.value;
+    progressiveState.requests = PAGE_SIZE;
+    renderRequests();
+  });
+  $("#request-search")?.addEventListener("input", (event) => {
+    requestQuery = event.target.value;
+    progressiveState.requests = PAGE_SIZE;
+    renderRequests();
+  });
   $("#refresh-requests").addEventListener("click", async (event) => {
+    resetProgressive("requests");
     const button = event.currentTarget;
     if (button.getAttribute("aria-busy") === "true") return;
     setButtonBusy(button, true, "刷新中…");
@@ -1190,6 +1329,7 @@ function bindEvents() {
   });
 
   $("#groups-body").addEventListener("click", (event) => {
+    if (handleProgressiveClick(event, "groups")) return;
     const opener = event.target.closest("[data-open-settings]");
     if (!opener) return;
     const row = opener.closest("tr[data-group-key]");
@@ -1251,6 +1391,7 @@ function bindEvents() {
   $("#settings-save").addEventListener("click", saveSettings);
 
   $("#requests-list").addEventListener("click", (event) => {
+    if (handleProgressiveClick(event, "requests")) return;
     const confirmButton = event.target.closest("[data-reject-confirm]");
     if (confirmButton) {
       const card = confirmButton.closest("[data-request-id]");

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>凝心溯溪-序 · 入群审核</title>
-  <link rel="stylesheet" href="./style.css?v=0.8.0">
+  <link rel="stylesheet" href="./style.css?v=0.8.1">
   <link rel="stylesheet" href="./series-ui.css" />
   </head>
 <body data-series-ui="1">
@@ -31,6 +31,13 @@
       <article class="metric metric-pending"><span>待审申请</span><strong class="warn skeleton" data-stat="pending_requests">—</strong></article>
     </div>
 
+    <div class="page-tabs" role="tablist" aria-label="入群审核工作区">
+      <button id="page-tab-pending" class="active" type="button" role="tab" aria-selected="true" aria-controls="page-panel-pending" data-page-tab="pending" tabindex="0">待审申请</button>
+      <button id="page-tab-groups" type="button" role="tab" aria-selected="false" aria-controls="page-panel-groups" data-page-tab="groups" tabindex="-1">群配置</button>
+      <button id="page-tab-targets" type="button" role="tab" aria-selected="false" aria-controls="page-panel-targets" data-page-tab="targets" tabindex="-1">目标群聊</button>
+      <button id="page-tab-settings" type="button" role="tab" aria-selected="false" aria-controls="page-panel-settings" data-page-tab="settings" tabindex="-1">设置与诊断</button>
+    </div>
+
     <section id="legacy-notice" class="card legacy-notice hidden" aria-labelledby="legacy-title">
       <div class="section-heading">
         <div>
@@ -41,7 +48,8 @@
       </div>
     </section>
 
-    <article class="card" aria-labelledby="settings-title">
+    <section id="page-panel-settings" class="page-panel" role="tabpanel" aria-labelledby="page-tab-settings" data-page-panel="settings" hidden>
+      <article class="card" aria-labelledby="settings-title">
       <div class="section-heading">
         <div>
           <h2 id="settings-title">全局设置</h2>
@@ -59,7 +67,28 @@
       <div id="settings-error" class="notice error hidden" role="alert"></div>
     </article>
 
-    <article class="card" aria-labelledby="groups-title">
+    <article class="card" aria-labelledby="simulate-title">
+      <div class="section-heading">
+        <div>
+          <h2 id="simulate-title">模拟申请</h2>
+          <p>零副作用诊断：走真实自动审核链路（预设 → 知联动 → 兜底），不触平台、不写记录、不发通知。</p>
+        </div>
+      </div>
+      <div class="simulate-form">
+        <label class="popover-field"><span>群</span><select id="simulate-group" class="inline-select"><option value="">正在加载群列表…</option></select></label>
+        <label class="popover-field"><span>问题</span><input id="simulate-question" class="group-whitelist" type="text" maxlength="2048" placeholder="入群问题（留空 = 仅按答案判断）"></label>
+        <label class="popover-field"><span>答案</span><textarea id="simulate-answer" class="group-whitelist jq-answers" rows="3" maxlength="2048" placeholder="申请人填写的答案（必填）"></textarea></label>
+        <div class="popover-actions">
+          <button id="simulate-run" class="button compact" type="button">开始测试</button>
+        </div>
+      </div>
+      <div id="simulate-error" class="notice error hidden" role="alert"></div>
+      <div id="simulate-result" class="simulate-result hidden" aria-live="polite"></div>
+    </article>
+    </section>
+
+    <section id="page-panel-groups" class="page-panel" role="tabpanel" aria-labelledby="page-tab-groups" data-page-panel="groups" hidden>
+      <article class="card" aria-labelledby="groups-title">
       <div class="section-heading">
         <div>
           <h2 id="groups-title">群配置</h2>
@@ -98,8 +127,10 @@
         </table>
       </div>
     </article>
+    </section>
 
-    <article class="card" aria-labelledby="target-groups-title">
+    <section id="page-panel-targets" class="page-panel" role="tabpanel" aria-labelledby="page-tab-targets" data-page-panel="targets" hidden>
+      <article class="card" aria-labelledby="target-groups-title">
       <div class="section-heading">
         <div>
           <h2 id="target-groups-title">目标群聊</h2>
@@ -121,8 +152,10 @@
       </div>
       <div id="target-groups-list" class="target-groups-list" aria-live="polite"><p class="empty-state">正在加载…</p></div>
     </article>
+    </section>
 
-    <article class="card" aria-labelledby="requests-title">
+    <section id="page-panel-pending" class="page-panel" role="tabpanel" aria-labelledby="page-tab-pending" data-page-panel="pending">
+      <article class="card" aria-labelledby="requests-title">
       <div class="section-heading request-heading">
         <div>
           <h2 id="requests-title">待审申请</h2>
@@ -130,35 +163,28 @@
         </div>
         <button id="refresh-requests" class="button secondary compact" type="button">↻ 刷新申请</button>
       </div>
+      <div class="si-filter-bar">
+        <select id="request-status-filter" class="inline-select" aria-label="申请状态筛选">
+          <option value="">全部状态</option>
+          <option value="pending">待审</option>
+          <option value="platform_error">平台失败</option>
+        </select>
+        <select id="request-group-filter" class="inline-select" aria-label="申请群筛选"></select>
+        <input id="request-search" type="search" class="group-whitelist" placeholder="搜索昵称或 QQ" aria-label="搜索申请" />
+      </div>
       <div id="requests-list" class="request-list" aria-live="polite">
         <p class="empty-state">正在加载…</p>
       </div>
     </article>
+    </section>
 
-    <article class="card" aria-labelledby="simulate-title">
-      <div class="section-heading">
-        <div>
-          <h2 id="simulate-title">模拟申请</h2>
-          <p>零副作用诊断：走真实自动审核链路（预设 → 知联动 → 兜底），不触平台、不写记录、不发通知。</p>
-        </div>
-      </div>
-      <div class="simulate-form">
-        <label class="popover-field"><span>群</span><select id="simulate-group" class="inline-select"><option value="">正在加载群列表…</option></select></label>
-        <label class="popover-field"><span>问题</span><input id="simulate-question" class="group-whitelist" type="text" maxlength="2048" placeholder="入群问题（留空 = 仅按答案判断）"></label>
-        <label class="popover-field"><span>答案</span><textarea id="simulate-answer" class="group-whitelist jq-answers" rows="3" maxlength="2048" placeholder="申请人填写的答案（必填）"></textarea></label>
-        <div class="popover-actions">
-          <button id="simulate-run" class="button compact" type="button">开始测试</button>
-        </div>
-      </div>
-      <div id="simulate-error" class="notice error hidden" role="alert"></div>
-      <div id="simulate-result" class="simulate-result hidden" aria-live="polite"></div>
-    </article>
+
   </main>
 
   <div id="group-popover" class="group-popover hidden" role="dialog" aria-labelledby="group-popover-title"></div>
 
   <script src="/api/plugin/page/bridge-sdk.js"></script>
   <script src="./series-ui.js"></script>
-  <script src="./app.js?v=0.8.0"></script>
+  <script src="./app.js?v=0.8.1"></script>
 </body>
 </html>

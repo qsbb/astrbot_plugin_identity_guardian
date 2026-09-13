@@ -12,7 +12,7 @@ def read_page(name: str) -> str:
 def test_page_loads_bridge_before_application_script():
     html = read_page("index.html")
     bridge = '<script src="/api/plugin/page/bridge-sdk.js"></script>'
-    app = '<script src="./app.js?v=0.8.0"></script>'
+    app = '<script src="./app.js?v=0.8.1"></script>'
     assert bridge in html
     assert app in html
     assert html.index(bridge) < html.index(app)
@@ -284,3 +284,58 @@ def test_page_has_dashboard_i18n_metadata():
     page = metadata["pages"]["join_review"]
     assert page["title"] == "入群审核"
     assert page["description"]
+
+
+def test_groups_table_matches_current_five_column_model():
+    css = read_page("style.css")
+    assert "min-width: 1220px" not in css
+    assert css.count(".groups-table th:nth-child(") == 5
+    assert "th:nth-child(6)" not in css
+    assert css.index("@media (max-width: 780px)") < css.index("@media (max-width: 560px)")
+
+
+def test_page_uses_top_level_tabs_to_reduce_height():
+    html = read_page("index.html")
+    js = read_page("app.js")
+    css = read_page("style.css")
+    assert html.count('role="tab" aria-selected') == 4
+    assert html.count('role="tabpanel"') == 4
+    for panel in ("pending", "groups", "targets", "settings"):
+        assert f'data-page-tab="{panel}"' in html
+        assert f'data-page-panel="{panel}"' in html
+    assert "function switchPageTab(" in js
+    assert "function bindPageTabs(" in js
+    assert "bindPageTabs();" in js
+    assert ".page-tabs" in css
+    assert ".page-panel[hidden]" in css
+
+
+def test_remove_target_group_uses_shared_confirmation():
+    js = read_page("app.js")
+    assert "window.confirm" not in js
+    assert "window.SeriesUI.confirm" in js
+    assert 'title: "移除目标群"' in js
+
+
+def test_large_lists_use_client_side_progressive_rendering():
+    js = read_page("app.js")
+    css = read_page("style.css")
+    assert "const PAGE_SIZE = window.matchMedia" in js
+    assert "const progressiveState = { requests: PAGE_SIZE, groups: PAGE_SIZE, targets: PAGE_SIZE };" in js
+    assert "function progressiveFooter(" in js
+    assert "function handleProgressiveClick(" in js
+    assert "data-show-more" in js
+    assert "data-collapse" in js
+    assert "全选作用于全部群" in js
+    assert "filteredRequests" in js
+    assert "request-status-filter" in js
+    assert ".progressive-actions" in css
+    assert ".progressive-row td" in css
+
+
+def test_status_and_errors_prefer_shared_series_toast():
+    js = read_page("app.js")
+    assert 'window.SeriesUI?.toast' in js
+    assert 'window.SeriesUI.toast(message, "error")' in js
+    assert 'window.SeriesUI.toast(message, "info")' in js
+    assert 'id="page-error"' in read_page("index.html")
