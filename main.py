@@ -13,6 +13,7 @@ import inspect
 import json
 import math
 import pathlib
+from datetime import UTC, datetime
 from typing import Any
 
 from astrbot.api.event import AstrMessageEvent, filter
@@ -351,6 +352,72 @@ class IdentityGuardianPlugin(Star):
         self.config._raw.update(values)
         self.config.apply_log_level()
 
+    def _native_config_path(self) -> pathlib.Path | None:
+        """尽力定位 AstrBot 托管的本插件配置文件（找不到则退化为内存快照）。"""
+        native = getattr(self, "_native_config", None)
+        for name in ("config_path", "_config_path", "path", "file_path"):
+            value = getattr(native, name, None)
+            if isinstance(value, (str, pathlib.Path)) and str(value):
+                return pathlib.Path(value)
+        return None
+
+    def _backup_native_config(self) -> str:
+        """固化前先备份原生配置，返回 backup_id；失败返回空串并告警。"""
+        try:
+            stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+            target = pathlib.Path(self.data_dir) / f"native-backup-{stamp}.json"
+            source = self._native_config_path()
+            if source is not None and source.is_file():
+                payload = source.read_text(encoding="utf-8")
+            else:
+                # 拿不到平台配置文件时，至少把当前内存配置整份落盘，保证可回滚。
+                payload = json.dumps(self.config._raw, ensure_ascii=False, indent=2)
+            tmp_path = target.with_name(f".{target.name}.tmp")
+            tmp_path.write_text(payload, encoding="utf-8")
+            tmp_path.replace(target)
+            return stamp
+        except Exception as exc:  # noqa: BLE001 - 备份失败只告警，固化流程继续
+            self.logger.warning("%s native config backup failed: %s", LOG_PREFIX, exc)
+            return ""
+
+    async def _apply_native_series_control_values(self, values: Any) -> dict[str, Any]:
+        """把给定字段写进原生配置并落盘（固化用；失败回滚内存）。"""
+        if not isinstance(values, dict) or not values:
+            return {"status": "error", "reason": "INVALID_PATCH"}
+        native = getattr(self, "_native_config", None)
+        if not callable(getattr(native, "save_config_async", None)):
+            return {"status": "error", "reason": "NATIVE_CONFIG_UNAVAILABLE"}
+        try:
+            refreshed = Config({**self.config._raw, **values})
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            return {
+                "status": "error",
+                "reason": f"INVALID_CONFIG:{type(exc).__name__}",
+            }
+        backup_id = self._backup_native_config()
+        previous = dict(self.config._raw)
+        self.config._raw = refreshed._raw
+        self._series_control.sync_runtime()
+        try:
+            committed = await native.save_config_async(dict(values))
+        except Exception as exc:  # noqa: BLE001 - 落盘异常一律回滚，避免内存与磁盘不一致
+            self.config._raw = previous
+            self._series_control.sync_runtime()
+            return {
+                "status": "error",
+                "reason": f"PERSIST_FAILED:{type(exc).__name__}",
+            }
+        if committed is not True:
+            self.config._raw = previous
+            self._series_control.sync_runtime()
+            return {"status": "error", "reason": "PERSIST_SUPERSEDED"}
+        return {
+            "status": "ok",
+            "written": sorted(values.keys()),
+            "skipped": [],
+            "backup_id": backup_id,
+        }
+
     def series_control_contract(self):
         return self._series_control.series_control_contract()
 
@@ -359,6 +426,12 @@ class IdentityGuardianPlugin(Star):
 
     def series_control_snapshot(self):
         return self._series_control.series_control_snapshot()
+
+    def series_control_native_write(self, patch, *, expected_revision=None):
+        """一键固化入口（核调用）：把值写进本插件自己的原生配置。"""
+        return self._series_control.series_control_native_write(
+            patch, expected_revision=expected_revision
+        )
 
     def validate_series_control_patch(self, patch, *, expected_revision: int):
         return self._series_control.validate_series_control_patch(

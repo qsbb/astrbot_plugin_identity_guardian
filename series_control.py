@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
@@ -30,7 +31,26 @@ class SeriesControlAdapter:
         self._overlay: dict[str, Any] = {}
         self._revision = 0
         self._mode = "native"
+        # 原生值快照：接管会把生效值写进运行时内存，必须在改内存之前先记住
+        # 插件自身配置的真值（核「一键读取当前配置」依赖它）。
+        self._native_values: dict[str, Any] = {}
+        self._capture_native_values()
         self._load()
+
+    def _capture_native_values(self) -> None:
+        try:
+            self._native_values = {name: self._native(name) for name in FIELDS}
+        except (AttributeError, KeyError, TypeError, ValueError):
+            self._native_values = {}
+
+    def _native_value(self, field: str) -> Any:
+        """插件自身配置当前值（接管覆盖不算）。"""
+        if field in self._native_values:
+            return self._native_values[field]
+        try:
+            return self._native(field)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return FIELDS[field]["default"]
 
     def _load(self) -> None:
         try:
@@ -123,9 +143,11 @@ class SeriesControlAdapter:
             "capabilities": [
                 "read_schema",
                 "read_snapshot",
+                "read_native",
                 "validate_patch",
                 "apply_patch",
                 "reset_override",
+                "write_native",
             ],
             "read_only": False,
             "secrets_in_response": False,
@@ -155,20 +177,62 @@ class SeriesControlAdapter:
 
     def series_control_snapshot(self) -> dict[str, Any]:
         raw = getattr(self.plugin.config, "_raw", {})
+        fields: dict[str, dict[str, Any]] = {}
+        for name, spec in FIELDS.items():
+            item: dict[str, Any] = {
+                "native_configured": name in raw,
+                "managed_configured": name in self._overlay,
+                "effective_source": "managed"
+                if self._mode == "managed" and name in self._overlay
+                else "plugin",
+                "effective_value": self._effective(name),
+            }
+            # 原生值：供核「一键读取当前配置」使用（secret/write_only 不回传）
+            if spec.get("secret") or spec.get("write_only"):
+                item["secret"] = True
+            else:
+                item["native_value"] = self._native_value(name)
+            fields[name] = item
+        return {"status": "ok", "revision": self._revision, "fields": fields}
+
+    async def series_control_native_write(
+        self, patch: dict[str, Any], *, expected_revision: int | None = None
+    ) -> dict[str, Any]:
+        """一键固化：把当前值写进插件自身配置（核掉线后仍按此运行）。
+
+        只接受 FIELDS 内的可写字段；先校验类型，再交给插件层备份 + 原子落盘。
+        """
+        result = self.validate_series_control_patch(
+            dict(patch or {}),
+            expected_revision=(
+                self._revision if expected_revision is None else expected_revision
+            ),
+        )
+        if result.get("status") != "ok":
+            return result
+        clean = dict(result.get("patch") or {})
+        hook = getattr(self.plugin, "_apply_native_series_control_values", None)
+        if not callable(hook):
+            return {
+                "status": "error",
+                "reason": "UNSUPPORTED",
+                "revision": self._revision,
+            }
+        outcome = hook(clean)
+        if inspect.isawaitable(outcome):
+            outcome = await outcome
+        if not isinstance(outcome, dict) or outcome.get("status") != "ok":
+            reason = str((outcome or {}).get("reason") or "PERSIST_FAILED")
+            return {"status": "error", "reason": reason, "revision": self._revision}
+        # 原生配置已被改写：记住新真值，后续读取/回归以它为准。
+        self._native_values.update(clean)
         return {
             "status": "ok",
+            "reason": "APPLIED",
             "revision": self._revision,
-            "fields": {
-                name: {
-                    "native_configured": name in raw,
-                    "managed_configured": name in self._overlay,
-                    "effective_source": "managed"
-                    if self._mode == "managed" and name in self._overlay
-                    else "plugin",
-                    "effective_value": self._effective(name),
-                }
-                for name in FIELDS
-            },
+            "written": list(outcome.get("written") or clean.keys()),
+            "skipped": list(outcome.get("skipped") or []),
+            "backup_id": str(outcome.get("backup_id") or ""),
         }
 
     def validate_series_control_patch(
@@ -287,6 +351,14 @@ def schema(plugin: Any) -> dict[str, Any]:
 
 def snapshot(plugin: Any) -> dict[str, Any]:
     return plugin._series_control.series_control_snapshot()
+
+
+def native_write(
+    plugin: Any, patch: dict[str, Any], *, expected_revision: int | None = None
+) -> Any:
+    return plugin._series_control.series_control_native_write(
+        patch, expected_revision=expected_revision
+    )
 
 
 def validate(
