@@ -170,13 +170,19 @@ body[data-series-ui] #legacy-notice h2 { color: var(--si-warning); }
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
   margin-top: 18px;
+  margin-bottom: 10px;
   padding: 12px 14px;
   border: 1px solid var(--si-line);
   border-radius: var(--si-radius-sm);
-  background: var(--si-surface-soft);
+  background: rgba(255, 255, 255, .96);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 8px 18px rgba(77, 84, 142, .08);
+  scroll-margin-top: 14px;
 }
 
 .select-all-label,
@@ -504,6 +510,8 @@ body[data-series-ui] .status-badge.bad {
 
 .request-person strong {
   display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--si-ink);
   font-size: 15px;
 }
@@ -739,6 +747,11 @@ body[data-series-ui] .jq-answers {
   min-width: 0;
 }
 
+.target-group-row > div:first-child strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .target-group-row .secondary-value { overflow-wrap: anywhere; }
 
 .request-invitation-note dd { color: var(--si-warning); }
@@ -966,7 +979,7 @@ body[data-series-ui] button[aria-busy="true"]::before {
 
   .batch-actions .button {
     min-width: 0;
-    white-space: normal;
+    white-space: nowrap;
   }
 
   .progressive-actions {
@@ -1001,17 +1014,6 @@ body[data-series-ui] button[aria-busy="true"]::before {
   body[data-series-ui] button[aria-busy="true"]::before { animation: none; }
 }
 
-
-.batch-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  padding: 12px 14px;
-  margin-bottom: 10px;
-  scroll-margin-top: 14px;
-  background: rgba(255,255,255,.96);
-  box-shadow: 0 8px 18px rgba(77, 84, 142, .08);
-}
 
 /* 键盘快速审批：提示 + 当前选中卡片 */
 .keyboard-hint {

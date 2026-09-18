@@ -34,7 +34,13 @@ const state = {
 };
 
 let settingsBaseline = null;
-const showUnsavedConfirm = window.SeriesUI.confirm;
+
+// 惰性获取共享确认框：SeriesUI 未加载时回退为“取消”，不阻塞模块加载。
+function seriesConfirm(options) {
+  return window.SeriesUI?.confirm
+    ? window.SeriesUI.confirm(options)
+    : Promise.resolve(false);
+}
 
 function hasUnsavedChanges() {
   return settingsFormHasUnsavedChanges() || popoverHasUnsavedChanges();
@@ -42,7 +48,7 @@ function hasUnsavedChanges() {
 
 async function confirmDiscardChanges() {
   if (!hasUnsavedChanges()) return true;
-  return (await showUnsavedConfirm({
+  return (await seriesConfirm({
     title: "未保存的修改",
     message: "当前页面还有未保存的改动，离开将放弃这些改动。",
     confirmText: "放弃修改",
@@ -128,14 +134,11 @@ function botRoleLabel(role) {
   return BOT_ROLE_LABELS[key] || `其它身份（${key}）`;
 }
 
+// 惰性别名：优先共享 SeriesUI.escapeHtml，SeriesUI 未加载时回退到等价实现。
+const HTML_ESCAPE_FALLBACK = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+
 function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#39;",
-  })[character]);
+  return (window.SeriesUI?.escapeHtml || HTML_ESCAPE_FALLBACK)(value);
 }
 
 function hasOwn(value, key) {
@@ -156,37 +159,34 @@ async function resolveBridge(timeout = 3000) {
   throw new Error("请从 AstrBot 插件管理页打开此页面");
 }
 
-function parseJsonResponse(value) {
-  let response = value;
-  if (typeof value === "string") {
-    try {
-      response = JSON.parse(value);
-    } catch (_error) {
-      throw new Error("服务端返回了无法识别的数据");
-    }
+// 惰性别名：首次调用时才经 SeriesUI.makeApi 创建，SeriesUI 未加载不阻塞模块加载。
+let sharedApi = null;
+
+function pageApi() {
+  if (sharedApi) return sharedApi;
+  if (typeof window.SeriesUI?.makeApi !== "function") {
+    throw new Error("AstrBot 页面通信接口尚未就绪");
   }
-  if (!response || typeof response !== "object") {
-    throw new Error("服务端返回了空响应");
-  }
-  if (response.success === false) {
-    const code = String(response.error || response.code || "");
-    throw new Error(API_ERROR_MESSAGES[code] || response.detail || response.message || code || "请求失败");
-  }
-  return response.data ?? response;
+  sharedApi = window.SeriesUI.makeApi({
+    get: (name) => bridge.apiGet(`${API_PREFIX}/${name}`),
+    post: (name, payload) => bridge.apiPost(`${API_PREFIX}/${name}`, payload),
+    errorMessages: API_ERROR_MESSAGES,
+  });
+  return sharedApi;
 }
 
 async function apiGet(name) {
   if (!bridge || typeof bridge.apiGet !== "function") {
     throw new Error("AstrBot 页面通信接口尚未就绪");
   }
-  return parseJsonResponse(await bridge.apiGet(`${API_PREFIX}/${name}`));
+  return pageApi().get(name);
 }
 
 async function apiPost(name, payload) {
   if (!bridge || typeof bridge.apiPost !== "function") {
     throw new Error("AstrBot 页面通信接口尚未就绪");
   }
-  return parseJsonResponse(await bridge.apiPost(`${API_PREFIX}/${name}`, payload));
+  return pageApi().post(name, payload);
 }
 
 function listFrom(payload, keys) {
@@ -327,10 +327,14 @@ function updateStats() {
 
 function setButtonBusy(button, busy, busyLabel = "处理中…") {
   if (!button) return;
-  if (!button.dataset.idleLabel) button.dataset.idleLabel = button.textContent.trim();
-  button.disabled = busy;
+  if (typeof window.SeriesUI?.setBusy === "function") {
+    window.SeriesUI.setBusy(button, busy, busy ? busyLabel : "");
+  } else {
+    if (!button.dataset.idleLabel) button.dataset.idleLabel = button.textContent.trim();
+    button.disabled = busy;
+    button.textContent = busy ? busyLabel : button.dataset.idleLabel;
+  }
   button.setAttribute("aria-busy", String(busy));
-  button.textContent = busy ? busyLabel : button.dataset.idleLabel;
 }
 
 function showPageError(error) {
@@ -473,7 +477,7 @@ function renderSimulateResultReplyPreview(data) {
     return `<div class="simulate-stage"><span class="simulate-detail"><strong>${label}</strong>${badge} ${escapeHtml(entry.text || "")}</span></div>`;
   };
   return `<div class="simulate-reply-preview">
-      <span class="simulate-detail"><strong>结果回复预览</strong>（管理员引用回复后 bot 的回应，仅预览，未发送）</span>
+      <span class="simulate-detail"><strong>结果回复预览</strong>（管理员引用回复后 bot 的回应）</span>
       ${row("若同意：", replies.approved)}
       ${row("若拒绝：", replies.rejected)}
     </div>`;
@@ -497,7 +501,7 @@ function renderSimulatePreview(data) {
   return `<div class="simulate-preview">
       <span class="status-badge ${badgeClass}">推送文案预览 · ${escapeHtml(styleLabel)}</span>
       <pre class="simulate-preview-text">${escapeHtml(preview.text || "")}</pre>
-      <span class="simulate-detail">${escapeHtml(meta.join(" · "))}（仅预览，未发送）</span>
+      <span class="simulate-detail">${escapeHtml(meta.join(" · "))}</span>
     </div>
     ${renderSimulateResultReplyPreview(data)}`;
 }
@@ -519,7 +523,7 @@ function renderSimulateResult(data) {
     <div class="simulate-final">
       <strong>最终结论：${escapeHtml(verdict)}（置信度 ${confidence}）</strong>
       <span class="simulate-detail">${escapeHtml(final.reason || "")}${presetsSource ? ` · 预设来源：${presetsSource}` : ""}</span>
-      <span class="simulate-would">${escapeHtml(would)}（仅说明，未执行任何操作）</span>
+      <span class="simulate-would">${escapeHtml(would)}</span>
     </div>
     ${renderSimulatePreview(data)}`;
   result.classList.remove("hidden");
@@ -879,8 +883,7 @@ function resetProgressive(...kinds) {
 }
 
 function renderProgressiveKind(kind) {
-  if (kind === "requests") renderRequests();
-  else if (kind === "history") renderRequests();
+  if (kind === "requests" || kind === "history") renderRequests();
   else if (kind === "groups") renderGroups();
   else if (kind === "targets") renderTargetGroups();
 }
@@ -973,7 +976,7 @@ function renderRequests() {
 
   $("#pending-column-count").textContent = String(pending.length);
   $("#history-column-title").textContent = requestHistoryAll ? "全部记录" : "已处理（今天）";
-  $("#request-summary").textContent = `${pending.length} 条待处理，${history.length} 条${requestHistoryAll ? "历史" : "今日已处理"}；左栏保留平台失败重试。`;
+  $("#request-summary").textContent = `${pending.length} 条待处理，${history.length} 条${requestHistoryAll ? "历史" : "今日已处理"}。`;
   updateRequestChips();
   updateStats();
   // 重绘后保持键盘选中态；对应申请已经不在列表里就清空。
@@ -995,7 +998,7 @@ function renderTargetPlatformOptions() {
     ].map((group) => [String(group.platform_id), group]),
   ).values());
   select.innerHTML = platforms.length
-    ? platforms.map((group) => `<option value="${escapeHtml(group.platform_id)}">${escapeHtml(group.platform_id)} · ${escapeHtml(group.bot_name || "Bot")}</option>`).join("")
+    ? platforms.map((group) => `<option value="${escapeHtml(group.platform_id)}">${escapeHtml(platformLabel(group.platform_id))} · ${escapeHtml(group.bot_name || "Bot")}</option>`).join("")
     : '<option value="">请先刷新已加入群</option>';
   if (platforms.some((group) => String(group.platform_id) === current)) select.value = current;
 }
@@ -1112,15 +1115,13 @@ async function removeTargetGroup(row) {
   const key = row?.dataset.targetKey || "";
   const target = state.targetGroups.find((item) => groupKey(item.platform_id, item.group_id) === key);
   if (!target) return;
-  const confirmed = window.SeriesUI?.confirm
-    ? await window.SeriesUI.confirm({
-      title: "移除目标群",
-      message: `确认移除目标群 ${target.group_id}？移除后不会再处理该群的新邀请。`,
-      confirmText: "移除",
-      cancelText: "取消",
-      danger: true,
-    })
-    : false;
+  const confirmed = await seriesConfirm({
+    title: "移除目标群",
+    message: `确认移除目标群 ${target.group_id}？移除后不会再处理该群的新邀请。`,
+    confirmText: "移除",
+    cancelText: "取消",
+    danger: true,
+  });
   if (!confirmed) return;
   const button = $("[data-remove-target]", row);
   setButtonBusy(button, true, "移除中…");
@@ -1301,12 +1302,18 @@ function showFormError(container, error) {
   if (element) element.textContent = error?.message || String(error || "");
 }
 
-async function refreshStoredData() {
+// groups / requests / target-groups 三个请求与 legacyAvailable 解析，
+// loadAll 全量加载与局部刷新共用。
+async function fetchStoredPayloads() {
   const [groupsPayload, requestsPayload, targetsPayload] = await Promise.all([
     apiGet("groups"),
     apiGet("requests"),
     apiGet("target-groups"),
   ]);
+  return { groupsPayload, requestsPayload, targetsPayload };
+}
+
+function applyStoredPayloads({ groupsPayload, requestsPayload, targetsPayload }) {
   state.configuredGroups = listFrom(groupsPayload, ["groups", "configs", "group_configs"]);
   state.requests = listFrom(requestsPayload, ["requests", "items"]);
   state.targetGroups = listFrom(targetsPayload, ["groups", "target_groups", "items"]);
@@ -1316,10 +1323,18 @@ async function refreshStoredData() {
       ?? groupsPayload?.legacy
       ?? groupsPayload?.legacy_config,
   );
+}
+
+function renderStoredData() {
   renderGroups();
   renderInviteGroupOptions();
   renderTargetGroups();
   renderRequests();
+}
+
+async function refreshStoredData() {
+  applyStoredPayloads(await fetchStoredPayloads());
+  renderStoredData();
 }
 
 async function loadAll() {
@@ -1337,26 +1352,13 @@ async function loadAll() {
   if (targetFilterField) targetFilterField.value = "";
   const targetSearchField = $("#target-search");
   if (targetSearchField) targetSearchField.value = "";
-  const [joinedPayload, groupsPayload, requestsPayload, targetsPayload] = await Promise.all([
+  const [joinedPayload, storedPayloads] = await Promise.all([
     apiGet("joined-groups"),
-    apiGet("groups"),
-    apiGet("requests"),
-    apiGet("target-groups"),
+    fetchStoredPayloads(),
   ]);
   state.joinedGroups = listFrom(joinedPayload, ["groups", "joined_groups", "items"]);
-  state.configuredGroups = listFrom(groupsPayload, ["groups", "configs", "group_configs"]);
-  state.requests = listFrom(requestsPayload, ["requests", "items"]);
-  state.targetGroups = listFrom(targetsPayload, ["groups", "target_groups", "items"]);
-  state.legacyAvailable = Boolean(
-    groupsPayload?.legacy_available
-      ?? groupsPayload?.has_legacy_config
-      ?? groupsPayload?.legacy
-      ?? groupsPayload?.legacy_config,
-  );
-  renderGroups();
-  renderInviteGroupOptions();
-  renderTargetGroups();
-  renderRequests();
+  applyStoredPayloads(storedPayloads);
+  renderStoredData();
 }
 
 async function refreshJoinedGroups() {
@@ -1375,7 +1377,7 @@ async function refreshJoinedGroups() {
     await loadTargetGroups();
     renderGroups();
     renderInviteGroupOptions();
-    showStatus("已刷新当前 aiocqhttp Bot 加入的群；本次只读操作未修改配置。");
+    showStatus("已刷新已加入群列表");
   } catch (error) {
     showPageError(error);
   } finally {
@@ -1490,15 +1492,13 @@ async function runBatch(action) {
     return;
   }
   if (action === "disable_all") {
-    const confirmed = window.SeriesUI?.confirm
-      ? await window.SeriesUI.confirm({
-        title: "全部关闭",
-        message: `将关闭 ${groups.length} 个群的自动审核和发送审核，确定继续吗？`,
-        confirmText: "全部关闭",
-        cancelText: "取消",
-        danger: true,
-      })
-      : false;
+    const confirmed = await seriesConfirm({
+      title: "全部关闭",
+      message: `将关闭 ${groups.length} 个群的自动审核和发送审核，确定继续吗？`,
+      confirmText: "全部关闭",
+      cancelText: "取消",
+      danger: true,
+    });
     if (!confirmed) return;
   }
   state.batchBusy = true;
@@ -1529,8 +1529,7 @@ async function handleRequestAction(card, action, reason = "") {
     if (action === "reject" && reason) payload.reason = reason;
     await apiPost(action, payload);
     await refreshStoredData();
-    const invitation = card.querySelector(".request-invitation-note") !== null
-      || card.textContent.includes("邀请 Bot 加入");
+    const invitation = card.querySelector(".request-invitation-note") !== null;
     showStatus(invitation
       ? (action === "approve" ? "邀请已接受，等待 Bot 进群事件确认。" : "邀请已拒绝。")
       : (action === "approve" ? "申请已批准。" : "申请已驳回。"));
@@ -1553,12 +1552,8 @@ function syncToggleLabel(input) {
   else if (field === "review_send_enabled") label.textContent = checked ? "发送审核：开启" : "发送审核：关闭";
 }
 
-async function switchPageTab(name) {
-  const current = document.querySelector("[data-page-tab].active")?.dataset.pageTab;
-  if (current && current !== name) {
-    if (!await confirmDiscardChanges()) return false;
-    discardUnsavedChanges();
-  }
+// SeriesUI 未加载时的手动切换实现；加载后由 SeriesUI.bindTabs 接管。
+function activatePageTab(name) {
   const tabs = [...document.querySelectorAll("[data-page-tab]")];
   const panels = [...document.querySelectorAll("[data-page-panel]")];
   tabs.forEach((tab) => {
@@ -1570,21 +1565,60 @@ async function switchPageTab(name) {
   panels.forEach((panel) => {
     panel.hidden = panel.dataset.pagePanel !== name;
   });
+}
+
+let activatePageTabImpl = activatePageTab;
+
+async function switchPageTab(name) {
+  const current = document.querySelector("[data-page-tab].active")?.dataset.pageTab;
+  if (current && current !== name) {
+    if (!await confirmDiscardChanges()) return false;
+    discardUnsavedChanges();
+  }
+  activatePageTabImpl(name);
   return true;
+}
+
+function arrowTabTarget(index, key, count) {
+  if (key === "ArrowRight") return (index + 1) % count;
+  if (key === "ArrowLeft") return (index - 1 + count) % count;
+  if (key === "Home") return 0;
+  return count - 1;
 }
 
 function bindPageTabs() {
   const tabs = [...document.querySelectorAll("[data-page-tab]")];
+  if (typeof window.SeriesUI?.bindTabs === "function") {
+    // 未保存确认钩子：先于共享绑定注册，有未保存修改时拦截共享切换，
+    // 确认后经 bindTabs 返回的 activate 完成切换。
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", (event) => {
+        if (tab.classList.contains("active") || !hasUnsavedChanges()) return;
+        event.stopImmediatePropagation();
+        switchPageTab(tab.dataset.pageTab);
+      });
+      tab.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        if (!hasUnsavedChanges()) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const next = arrowTabTarget(index, event.key, tabs.length);
+        switchPageTab(tabs[next].dataset.pageTab).then((moved) => {
+          if (moved) tabs[next].focus();
+        });
+      });
+    });
+    activatePageTabImpl = window.SeriesUI.bindTabs(
+      document, "[data-page-tab]", "[data-page-panel]", "data-page-tab",
+    ).activate;
+    return;
+  }
   tabs.forEach((tab, index) => {
     tab.addEventListener("click", () => switchPageTab(tab.dataset.pageTab));
     tab.addEventListener("keydown", async (event) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
-      let next = index;
-      if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
-      if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
-      if (event.key === "Home") next = 0;
-      if (event.key === "End") next = tabs.length - 1;
+      const next = arrowTabTarget(index, event.key, tabs.length);
       if (await switchPageTab(tabs[next].dataset.pageTab)) tabs[next].focus();
     });
   });
@@ -1791,7 +1825,7 @@ function bindEvents() {
     if (!button) return;
     const card = button.closest("[data-request-id]");
     if (button.dataset.requestAction === "reject") {
-      // 驳回改为行内展开原因输入，点“确认驳回”才真正提交。
+      // 驳回原因行内展开，点“确认驳回”才提交。
       const requestId = String(card.dataset.requestId || "");
       if (!requestId || state.requestBusy.has(requestId)) return;
       rejectConfirmId = requestId;
