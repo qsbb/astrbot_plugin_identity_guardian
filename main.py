@@ -81,6 +81,7 @@ from .core.request_context import (
     set_flag,
 )
 from .core.welcome import WelcomeService
+from .model_router import resolve_model_route as resolve_routed_model_route
 from .series_diagnostics import (
     diagnostic_clear as clear_diagnostic_events,
     diagnostic_event,
@@ -262,6 +263,43 @@ class IdentityGuardianPlugin(Star):
             },
         )
 
+    def _resolve_peer_plugin(self, plugin_name: str) -> Any | None:
+        """解析其他插件实例：先试集成层快捷入口，再走 AstrBot 官方注册表。
+
+        AstrBot 4.x 没有 ``get_star_instance``；官方入口是
+        ``get_registered_star(name)``，运行实例挂在 ``StarMetadata.star_cls`` 上
+        （class 值要跳过）。
+        """
+        getter = getattr(self.context, "get_star_instance", None)
+        if callable(getter):
+            try:
+                instance = getter(plugin_name)
+            except Exception:
+                instance = None
+            if instance is not None and not isinstance(instance, type):
+                return instance
+        registry = getattr(self.context, "get_registered_star", None)
+        if callable(registry):
+            try:
+                meta = registry(plugin_name)
+            except Exception:
+                meta = None
+            if meta is not None:
+                for attr in (
+                    "star_cls",
+                    "star",
+                    "instance",
+                    "star_instance",
+                    "plugin",
+                ):
+                    try:
+                        candidate = getattr(meta, attr, None)
+                    except Exception:
+                        continue
+                    if candidate is not None and not isinstance(candidate, type):
+                        return candidate
+        return None
+
     async def _read_invitation_affinity(
         self,
         platform_id: str,
@@ -276,13 +314,7 @@ class IdentityGuardianPlugin(Star):
         the inviting person's relationship with the Bot.
         """
         del group_id
-        getter = getattr(self.context, "get_star_instance", None)
-        if not callable(getter):
-            return None
-        try:
-            relationship = getter("astrbot_plugin_relationship")
-        except Exception:
-            return None
+        relationship = self._resolve_peer_plugin("astrbot_plugin_relationship")
         if relationship is None:
             return None
         contract_getter = getattr(relationship, "invitation_affinity_contract", None)
@@ -317,12 +349,8 @@ class IdentityGuardianPlugin(Star):
             return None
 
     def _invitation_relationship_available(self) -> bool:
-        getter = getattr(self.context, "get_star_instance", None)
-        if not callable(getter):
-            return False
-        try:
-            relationship = getter("astrbot_plugin_relationship")
-        except Exception:
+        relationship = self._resolve_peer_plugin("astrbot_plugin_relationship")
+        if relationship is None:
             return False
         return callable(getattr(relationship, "get_invitation_affinity", None)) and callable(
             getattr(relationship, "invitation_affinity_contract", None)
@@ -851,6 +879,27 @@ class IdentityGuardianPlugin(Star):
     # LLM 调用
     # ------------------------------------------------------------------
 
+    def _provider_by_id(self, provider_id: Any) -> Any:
+        """按 id 取 AstrBot provider；id 为空或已失效时返回 None。
+
+        兼容框架两代 API：``Context.get_provider_by_id``（4.x 现行接口）与旧版
+        ``Context.get_provider``。任何异常都按「取不到」处理，不向上抛。
+        """
+        provider_id = str(provider_id or "").strip()
+        if not provider_id:
+            return None
+        for getter_name in ("get_provider_by_id", "get_provider"):
+            getter = getattr(self.context, getter_name, None)
+            if not callable(getter):
+                continue
+            try:
+                provider = getter(provider_id)
+            except Exception:
+                continue
+            if provider is not None:
+                return provider
+        return None
+
     async def _request_llm(
         self,
         prompt: str,
@@ -858,23 +907,43 @@ class IdentityGuardianPlugin(Star):
         provider_id: str,
         contexts: list[dict] | None = None,
     ) -> str:
-        """统一的 LLM 调用器：指定 provider，留空回退主对话 LLM。"""
+        """统一的 LLM 调用器：本地显式 → 核统一路由 → AstrBot 原生兜底。
+
+        只有核统一模型路由命中的那一层才附带核配的 ``model``（按次覆盖）；
+        本地显式 provider 与 AstrBot 原生 provider 都沿用自身默认模型。
+        """
         try:
             provider = None
+            model = ""
 
-            if provider_id:
-                get_provider = getattr(self.context, "get_provider", None)
-                if callable(get_provider):
-                    try:
-                        provider = get_provider(provider_id)
-                    except Exception:
-                        provider = None
+            # 1) 本地显式优先：配置的 provider 仍然存在时才用它。
+            #    该分支有意不带核的 model，避免核里的 model 覆盖本地明确选择。
+            provider = self._provider_by_id(provider_id)
 
+            # 2) 核统一模型路由（fast：入群审核判断与审核回复/预览属轻量生成）。
+            #    本地配置残留（provider 已失效）时也必须落到这一层，否则残留配置
+            #    会让核路由永远被跳过。
             if provider is None:
-                # 回退到主对话 provider
+                try:
+                    route = await resolve_routed_model_route(self.context, "fast")
+                except Exception:
+                    # 适配层本身已 fail-closed；这里再兜一层，保证核侧意外异常
+                    # 不会连带吞掉 AstrBot 原生兜底。
+                    route = {}
+                if isinstance(route, dict):
+                    provider = self._provider_by_id(route.get("provider_id"))
+                    if provider is not None:
+                        routed_model = route.get("model")
+                        if isinstance(routed_model, str):
+                            model = routed_model.strip()
+
+            # 3) AstrBot 原生兜底：当前会话使用的对话模型（现状保留）。
+            if provider is None:
                 get_using = getattr(self.context, "get_using_provider", None)
                 if callable(get_using):
                     provider = get_using()
+                    if inspect.isawaitable(provider):
+                        provider = await provider
 
             if provider is None:
                 self.logger.warning("%s no LLM provider available", LOG_PREFIX)
@@ -888,7 +957,19 @@ class IdentityGuardianPlugin(Star):
                 # OpenAI 格式的上下文消息列表（astrbot/core/provider/entities.py
                 # ProviderRequest.contexts），供预览生成参考近期群消息语气。
                 req.contexts = contexts
-            resp = await provider.text_chat(**req.__dict__)
+            call_kwargs = dict(req.__dict__)
+            if model:
+                # ProviderRequest 在部分 AstrBot 版本里自带 model 字段，写进
+                # kwargs 而不是 text_chat(..., model=...)，避免重复关键字。
+                call_kwargs["model"] = model
+                try:
+                    resp = await provider.text_chat(**call_kwargs)
+                except TypeError:
+                    # 老版本 provider 的 text_chat 不接受 model 参数：去掉再试。
+                    call_kwargs.pop("model", None)
+                    resp = await provider.text_chat(**call_kwargs)
+            else:
+                resp = await provider.text_chat(**call_kwargs)
             if hasattr(resp, "completion_text"):
                 return str(resp.completion_text)
             return str(resp)
@@ -899,7 +980,7 @@ class IdentityGuardianPlugin(Star):
             return ""
 
     async def _call_audit_llm(self, prompt: str) -> str:
-        """调用审核用 LLM，留空则回退主对话 LLM。"""
+        """调用审核用 LLM；未配置时依次尝试核统一路由与主对话 LLM。"""
         return await self._request_llm(prompt, "", self.config.audit_llm_provider)
 
     async def _call_push_llm(
@@ -908,7 +989,10 @@ class IdentityGuardianPlugin(Star):
         system_prompt: str = "",
         contexts: list[dict] | None = None,
     ) -> str:
-        """调用推送文案生成 LLM（push_llm_provider），失败返回空串。"""
+        """调用推送文案生成 LLM（push_llm_provider），失败返回空串。
+
+        未配置时依次尝试核统一路由与主对话 LLM；任何一步失败都返回空串。
+        """
         return await self._request_llm(
             prompt, system_prompt, self.config.push_llm_provider, contexts=contexts
         )
