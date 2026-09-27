@@ -1,4 +1,4 @@
-"""凝心溯溪-序插件主类。
+"""序插件主类。
 
 动态识别 bot、发送者与目标身份及关系，向 LLM 注入受控行动边界，
 并提供自助动作、互动反应、群信息管理以及按 Bot/群隔离的自动与人工入群审核能力。
@@ -138,11 +138,11 @@ def _resolve_llm_request(*candidates: Any) -> Any | None:
 @register(
     PLUGIN_NAME,
     "凌溪",
-    "凝心溯溪-序，关系感知、权限边界与群组行动",
+    "序，关系感知、权限边界与群组行动",
     __version__,
 )
 class IdentityGuardianPlugin(Star):
-    """凝心溯溪-序插件。"""
+    """序插件。"""
 
     PLUGIN_HEALTH_CONTRACT = "plugin.health@1.0"
     _current_instance: Any = None
@@ -2703,7 +2703,7 @@ class IdentityGuardianPlugin(Star):
 
     @filter.command_group("idg")
     def idg_group(self):
-        """凝心溯溪-序指令组。"""
+        """「序」指令组。"""
         pass
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -2733,7 +2733,7 @@ class IdentityGuardianPlugin(Star):
         auto_groups = sum(item.auto_audit_enabled for item in review_configs)
         send_groups = sum(item.review_send_enabled for item in review_configs)
         lines = [
-            f"凝心溯溪-序 {__version__}",
+            f"序 {__version__}",
             f"状态: {'已停止' if plugin._stopped else '运行中'}",
             f"bot 身份刷新间隔: {plugin.config.identity_refresh_interval}s",
             f"入群审核: {len(review_configs)} 群已配置 "
@@ -2840,7 +2840,7 @@ class IdentityGuardianPlugin(Star):
     async def idg_help(self, event: AstrMessageEvent):
         """查看帮助。"""
         lines = [
-            "凝心溯溪-序指令列表:",
+            "「序」指令列表:",
             "  /idg status - 查看状态",
             "  /idg stop - 紧急停止",
             "  /idg resume - 恢复运行",

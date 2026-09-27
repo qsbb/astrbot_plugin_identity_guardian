@@ -1,4 +1,12 @@
 ## [Unreleased]
+
+## 0.9.0 - 2026-09-28
+
+### 变更
+
+- 展示名去掉系列前缀：`metadata.yaml` 的 `display_name` 由「凝心溯溪-序」改为单字 **序**；核的可信登记、页面标题、`desc` 前缀与文档同步（系列归属仍由 `desc` / `short_desc` 里的「凝心溯溪系列」措辞承载）。
+- 补齐 `series_diagnostics.py` 缺失的 `import time`（ruff `F821` 未定义名：`_link_now()` 的兜底分支会 `NameError`）。
+
 ## 0.8.9 - 2026-09-21
 
 ### 新增
