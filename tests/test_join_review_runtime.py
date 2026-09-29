@@ -98,7 +98,7 @@ def audit_result(*, approved: bool = False, error: str = "") -> AutoAuditResult:
     )
 
 
-def make_runtime(tmp_path, result=None, *, affinity_reader=None):
+def make_runtime(tmp_path, result=None, *, affinity_reader=None, affinity_auto_approve=False):
     bot = Bot()
     onebot = OneBotClient()
     store = JoinReviewStore(tmp_path)
@@ -109,6 +109,7 @@ def make_runtime(tmp_path, result=None, *, affinity_reader=None):
         store,
         invitation_affinity_reader=affinity_reader or (lambda *_args: 80.0),
         invitation_relationship_available=lambda: True,
+        invitation_affinity_auto_approve=affinity_auto_approve,
     )
     return runtime, store, audit, Event(bot), bot
 
@@ -177,8 +178,21 @@ def test_invitation_requires_target_registration_and_skips_audit(tmp_path):
     assert not any(action == "send_group_msg" for action, _ in bot.calls)
 
 
-def test_invitation_threshold_auto_approves(tmp_path):
+def test_invitation_affinity_is_reference_only_by_default(tmp_path):
+    """好感达标默认只作参考，转人工审核，不直接授权自动同意。"""
     runtime, store, _, event, bot = make_runtime(tmp_path)
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+
+    result = run(runtime.handle_event(event, raw_request(sub_type="invite", comment="")))
+
+    assert result.outcome == "pending_invitation"
+    assert result.request is not None and result.request.status == "pending"
+    assert not any(name == "set_group_add_request" for name, _ in bot.calls)
+
+
+def test_invitation_affinity_auto_approve_opt_in(tmp_path):
+    """显式开启兼容开关后，才恢复好感达标即自动同意的旧行为。"""
+    runtime, store, _, event, bot = make_runtime(tmp_path, affinity_auto_approve=True)
     run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
 
     result = run(runtime.handle_event(event, raw_request(sub_type="invite", comment="")))
@@ -191,13 +205,32 @@ def test_invitation_threshold_auto_approves(tmp_path):
     assert not any(name == "get_group_member_info" for name, _ in bot.calls)
 
 
+def test_invitation_config_refresh_parses_string_false_and_updates_gate(tmp_path):
+    """页面热更新后，字符串 false 不会误开自动同意，阈值也立即生效。"""
+    runtime, store, _, event, bot = make_runtime(
+        tmp_path, affinity_reader=lambda *_args: 75.0, affinity_auto_approve=True
+    )
+    runtime.refresh_invitation_config(
+        threshold="70", auto_approve="false", without_relationship_policy="approve"
+    )
+    assert runtime.invitation_affinity_threshold == 70.0
+    assert runtime.invitation_affinity_auto_approve is False
+    assert runtime.invitation_without_relationship_policy == "approve"
+
+    run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
+    result = run(runtime.handle_event(event, raw_request(sub_type="invite", comment="")))
+
+    assert result.outcome == "pending_invitation"
+    assert not any(name == "set_group_add_request" for name, _ in bot.calls)
+
+
 def test_invitation_affinity_threshold_auto_approves_without_role(tmp_path):
     async def affinity(platform_id, group_id, user_id):
         assert (platform_id, group_id, user_id) == ("qq-main", "100", "200")
         return 80
 
     runtime, store, _, event, bot = make_runtime(
-        tmp_path, affinity_reader=affinity
+        tmp_path, affinity_reader=affinity, affinity_auto_approve=True
     )
     run(store.upsert_target_group(platform_id="qq-main", group_id="100"))
 

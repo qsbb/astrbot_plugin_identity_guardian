@@ -65,6 +65,7 @@ _DEFAULTS: dict[str, Any] = {
     "push_llm_provider": "",
     "pending_ttl_hours": 24,
     "invitation_affinity_threshold": 80.0,
+    "invitation_affinity_auto_approve": False,
     "invitation_without_relationship_policy": "reject",
     "cross_group_violation": False,
     "enable_set_admin_revoke": False,
@@ -306,6 +307,13 @@ class Config:
         return max(0.0, min(100.0, _parse_float(
             self._raw.get("invitation_affinity_threshold"), 80.0
         )))
+
+    @property
+    def invitation_affinity_auto_approve(self) -> bool:
+        """是否允许邀请人好感达标直接自动同意（默认否，好感只作审核参考）。"""
+        return _parse_bool(
+            self._raw.get("invitation_affinity_auto_approve"), False
+        )
 
     @property
     def invitation_without_relationship_policy(self) -> str:

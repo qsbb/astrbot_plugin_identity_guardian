@@ -24,10 +24,16 @@
     "hint": "这些是机器人的控制管理员，不是目标群管理员。其邀请 Bot 入群或要求 Bot 退群时无需普通审核；不会把普通群管理员自动提升为控制管理员。"
   },
   "invitation_affinity_threshold": {
-    "description": "[邀请 Bot] 自动接受所需的邀请人好感度",
+    "description": "[邀请 Bot] 邀请人好感参考线",
     "type": "float",
     "default": 80.0,
-    "hint": "安装情时，邀请人对 Bot 的好感低于此值不会自动接受 Bot 入群邀请；仅影响自动接受，不影响页面人工同意。"
+    "hint": "安装情时，邀请人对 Bot 的好感作为审核参考。默认不因好感达标自动同意，而是转入人工审核；只有显式开启下方开关后才据此自动接受。不影响页面人工同意。"
+  },
+  "invitation_affinity_auto_approve": {
+    "description": "[邀请 Bot] 好感达标时自动同意（兼容开关）",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭：好感只作为审核参考，达标也转入人工审核。开启后恢复旧行为——邀请人好感达到参考线即自动接受 Bot 入群邀请。好感本身不是操作授权。"
   },
   "invitation_without_relationship_policy": {
     "description": "[邀请 Bot] 未安装情时的自动处理",

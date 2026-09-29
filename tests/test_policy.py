@@ -1,6 +1,7 @@
 """策略引擎测试 — 核心安全测试。"""
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -183,8 +184,8 @@ def test_request_self_mute_wrong_trigger():
 # ------------------------------------------------------------------
 
 
-def test_mute_member_by_friendly():
-    """友好用户请求禁言他人 — 允许。"""
+def test_mute_member_by_platform_admin():
+    """群管理员请求禁言他人 — 允许。"""
     cfg = _make_config()
     engine = PolicyEngine(cfg)
     actor = _make_actor(
@@ -250,8 +251,8 @@ def test_mute_member_protected_target():
 # ------------------------------------------------------------------
 
 
-def test_kick_member_by_friendly():
-    """友好用户请求踢出 — 允许但需确认。"""
+def test_kick_member_by_platform_admin():
+    """群管理员请求踢出 — 允许但需确认。"""
     cfg = _make_config()
     engine = PolicyEngine(cfg)
     actor = _make_actor(
@@ -789,8 +790,8 @@ def test_delete_message_by_normal_member():
     assert "普通成员" in decision.reason
 
 
-def test_delete_message_by_friendly():
-    """友好用户请求撤回消息 — 允许。"""
+def test_delete_message_by_platform_admin():
+    """群管理员请求撤回消息 — 允许。"""
     cfg = _make_config()
     engine = PolicyEngine(cfg)
     actor = _make_actor(
@@ -939,8 +940,8 @@ def test_set_title_by_normal_member_protected_target():
     assert decision.allowed is False
 
 
-def test_set_title_by_friendly_requires_confirmation():
-    """友好用户请求设头衔 — 允许但需人工确认。"""
+def test_set_title_by_platform_admin_requires_confirmation():
+    """群管理员请求设头衔 — 允许但需人工确认。"""
     cfg = _make_config()
     engine = PolicyEngine(cfg)
     actor = _make_actor(
@@ -959,6 +960,72 @@ def test_set_title_by_friendly_requires_confirmation():
     )
     assert decision.allowed is True
     assert decision.requires_confirmation is True
+
+
+def test_set_group_admin_by_normal_member_is_rejected_even_when_bot_is_owner():
+    """机器人是群主不等于提出请求的人有权设置群管理员。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        bot_role="owner",
+        requester_id="999",
+        requester_role="member",
+        requester_relation="friendly",
+        target_id="888",
+        target_role="member",
+    )
+    decision = engine.evaluate(
+        actor,
+        "set_group_admin",
+        {"user_id": "888", "enable": True},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+    assert "普通成员" in decision.reason
+
+
+def test_set_group_admin_by_platform_admin_is_allowed_with_confirmation():
+    """群管理员拥有平台侧控制授权时可以请求设置群管理员。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        bot_role="owner",
+        requester_id="100",
+        requester_role="admin",
+        requester_relation="friendly",
+        target_id="888",
+        target_role="member",
+    )
+    decision = engine.evaluate(
+        actor,
+        "set_group_admin",
+        {"user_id": "888", "enable": True},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is True
+    assert decision.requires_confirmation is True
+
+
+def test_set_group_admin_by_control_admin_is_allowed_without_platform_role():
+    """显式控制管理员即使不是群成员管理员，也保留既有控制面授权。"""
+    cfg = _make_config(control_admin_users=["999"])
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        bot_role="owner",
+        requester_id="999",
+        requester_role="member",
+        requester_relation="normal",
+        target_id="888",
+        target_role="member",
+        bot_id="555",
+    )
+    decision = engine.evaluate(
+        actor,
+        "set_group_admin",
+        {"user_id": "888", "enable": True},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is True
 
 
 # ------------------------------------------------------------------
@@ -1026,3 +1093,111 @@ def test_mute_member_duration_clamped_to_max():
     )
     assert decision.allowed is True
     assert decision.params["duration"] == 600
+
+
+# ------------------------------------------------------------------
+# 关系标签与操作授权解耦（第一性原理：好感/关系性质不授予权限）
+# ------------------------------------------------------------------
+
+
+def test_friendly_relation_label_alone_does_not_grant_authority():
+    """仅凭社交标签 friendly（无 control_authority、无显式配置）不授予操作权限。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="999",
+        requester_role="member",
+        requester_relation="friendly",
+        target_id="888",
+        target_role="member",
+    )
+    decision = engine.evaluate(
+        actor,
+        "mute_member",
+        {"user_id": "888", "duration": 300},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+    assert "普通成员" in decision.reason
+
+
+def test_control_authority_grants_without_friendly_label():
+    """显式 control_authority（平台角色/控制管理员）即可授权，不依赖 friendly 标签。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = ActorContext(
+        bot_role="admin",
+        bot_id="555",
+        requester_id="999",
+        requester_role="member",
+        requester_relation="normal",
+        target_id="888",
+        target_role="member",
+        group_id="123456",
+        platform_id="aiocqhttp#1",
+        control_authority="platform_role",
+    )
+    decision = engine.evaluate(
+        actor,
+        "mute_member",
+        {"user_id": "888", "duration": 300},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is True
+
+
+def test_friendly_user_in_own_config_does_not_grant_authority():
+    """显式写入“序”自身 friendly_users 仍只影响关系，不授予操作权限。"""
+    cfg = _make_config(friendly_users=["999"])
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="999",
+        requester_role="member",
+        requester_relation="friendly",
+        target_id="888",
+        target_role="member",
+    )
+    decision = engine.evaluate(
+        actor,
+        "mute_member",
+        {"user_id": "888", "duration": 300},
+        TriggerSource.EXPLICIT_REQUEST.value,
+    )
+    assert decision.allowed is False
+
+
+def test_control_authority_helper_is_fail_closed_for_unknown():
+    """未知/空 control_authority 且无配置、无平台角色时判定为无授权。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="999",
+        requester_role="member",
+        requester_relation="friendly",
+    )
+    assert engine._has_control_authority(actor) is False
+
+
+def test_control_authority_helper_true_for_platform_role():
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    actor = _make_actor(
+        requester_id="999",
+        requester_role="admin",
+        requester_relation="normal",
+    )
+    assert engine._has_control_authority(actor) is True
+
+
+def test_explicit_unknown_control_authority_never_falls_back_to_role():
+    """显式未知授权来源不能借 requester_role 误放行。"""
+    cfg = _make_config()
+    engine = PolicyEngine(cfg)
+    for authority in ("unknown", "friendly", "relationship"):
+        actor = _make_actor(
+            requester_id="999",
+            requester_role="admin",
+            requester_relation="friendly",
+        )
+        actor = replace(actor, control_authority=authority)
+        assert engine._has_control_authority(actor) is False

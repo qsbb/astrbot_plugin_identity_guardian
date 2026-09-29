@@ -73,6 +73,9 @@ class ActorContext:
     target_relation: str | None = None
     group_id: str = ""
     platform_id: str = ""
+    # 操作授权来源：由平台角色/控制管理员判定后显式注入。
+    # 社交关系标签（friendly）不再直接等同于操作授权；缺省为空表示无控制面授权。
+    control_authority: str = ""
 
 
 @dataclass(slots=True)

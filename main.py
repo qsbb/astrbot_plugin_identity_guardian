@@ -215,6 +215,7 @@ class IdentityGuardianPlugin(Star):
             invitation_relationship_available=self._invitation_relationship_available,
             control_admin_checker=self.config.is_control_admin,
             invitation_affinity_threshold=self.config.invitation_affinity_threshold,
+            invitation_affinity_auto_approve=self.config.invitation_affinity_auto_approve,
             invitation_without_relationship_policy=self.config.invitation_without_relationship_policy,
         )
         self.join_review_page_api = JoinReviewPageAPI(
@@ -379,6 +380,14 @@ class IdentityGuardianPlugin(Star):
     def _apply_series_control_runtime(self, values: dict[str, Any]) -> None:
         self.config._raw.update(values)
         self.config.apply_log_level()
+        runtime = getattr(self, "join_review", None)
+        refresh = getattr(runtime, "refresh_invitation_config", None)
+        if callable(refresh):
+            refresh(
+                threshold=self.config.invitation_affinity_threshold,
+                auto_approve=self.config.invitation_affinity_auto_approve,
+                without_relationship_policy=self.config.invitation_without_relationship_policy,
+            )
 
     def _native_config_path(self) -> pathlib.Path | None:
         """尽力定位 AstrBot 托管的本插件配置文件（找不到则退化为内存快照）。"""
@@ -1505,6 +1514,14 @@ class IdentityGuardianPlugin(Star):
             return
 
         # Compatibility for partially constructed instances in older callers.
+        # 新版 runtime 缺失时禁止走旧的 invite 自动审核路径，避免绕过好感
+        # 仅作参考与无情 fallback 规则；普通 add 申请仍保留旧兼容逻辑。
+        if str(raw.get("sub_type") or "add").strip().casefold() == "invite":
+            self.logger.warning(
+                "%s join review runtime unavailable; invite request rejected safely",
+                LOG_PREFIX,
+            )
+            return
         if self.config.join_audit_mode == "off":
             return
         self._ensure_llm_caller()
@@ -1594,6 +1611,7 @@ class IdentityGuardianPlugin(Star):
                 target_id=target_id,
                 group_id="",
                 platform_id=str(event.get_platform_id() or ""),
+                control_authority="control_admin",
             )
         except Exception:
             return None

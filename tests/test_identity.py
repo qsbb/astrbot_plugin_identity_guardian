@@ -154,3 +154,33 @@ def test_shared_boundary_summary_never_contains_account_identifiers():
     assert '"mode": "raw_platform_account"' in summary
     assert '"platform_id"' not in summary
     assert '"user_id"' not in summary
+
+
+def _actor_with(responses, **config_overrides):
+    cfg = Config(
+        {
+            "owner_users": [],
+            "protected_users": [],
+            "blacklist_users": [],
+            "identity_refresh_interval": 300,
+            **config_overrides,
+        }
+    )
+    onebot = _FakeOneBot(responses)
+    manager = IdentityManager(cfg, onebot, RelationshipService(cfg))
+    manager.clear_cache()
+    return asyncio.run(
+        manager.get_actor_context(SimpleNamespace(), "aiocqhttp#1", "123", "555", "999")
+    )
+
+
+def test_actor_context_sets_control_authority_for_owner_and_platform_role():
+    """control_authority 由平台角色/主人显式判定，不由社交标签推导。"""
+    assert _actor_with([{"role": "member"}], owner_users=["999"]).control_authority == "owner"
+    assert _actor_with([{"role": "admin"}]).control_authority == "platform_role"
+    assert _actor_with([{"role": "member"}]).control_authority == ""
+
+
+def test_actor_context_control_admin_mapping():
+    actor = _actor_with([{"role": "member"}], control_admin_users=["999"])
+    assert actor.control_authority == "control_admin"

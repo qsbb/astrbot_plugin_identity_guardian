@@ -30,6 +30,7 @@ MAX_EVENT_TEXT = 2048
 MAX_NICKNAME = 128
 MAX_LEVEL = 64
 INVITATION_AFFINITY_THRESHOLD = 80.0
+_UNSET = object()
 
 InvitationAffinityReader = Callable[..., Any]
 
@@ -64,6 +65,22 @@ def _bounded_text(value: Any, maximum: int) -> str:
     if value is None:
         return ""
     return str(value).strip()[:maximum]
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    """把配置里的布尔值统一成不会误判的结果。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off", ""}:
+            return False
+        return default
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    return default
 
 
 def _event_platform_id(event: Any, raw: dict[str, Any]) -> str:
@@ -138,6 +155,7 @@ class JoinReviewRuntime:
         invitation_relationship_available: Callable[[], Any] | None = None,
         control_admin_checker: Callable[[str], bool] | None = None,
         invitation_affinity_threshold: float = INVITATION_AFFINITY_THRESHOLD,
+        invitation_affinity_auto_approve: bool = False,
         invitation_without_relationship_policy: str = "reject",
     ) -> None:
         self.audit = audit
@@ -151,14 +169,41 @@ class JoinReviewRuntime:
         self.invitation_affinity_reader = invitation_affinity_reader
         self.invitation_relationship_available = invitation_relationship_available
         self.control_admin_checker = control_admin_checker
-        self.invitation_affinity_threshold = max(
-            0.0, min(100.0, float(invitation_affinity_threshold))
+        self.invitation_affinity_threshold = INVITATION_AFFINITY_THRESHOLD
+        self.invitation_affinity_auto_approve = False
+        self.invitation_without_relationship_policy = "reject"
+        self.refresh_invitation_config(
+            threshold=invitation_affinity_threshold,
+            auto_approve=invitation_affinity_auto_approve,
+            without_relationship_policy=invitation_without_relationship_policy,
         )
-        self.invitation_without_relationship_policy = (
-            invitation_without_relationship_policy
-            if invitation_without_relationship_policy in {"approve", "reject"}
-            else "reject"
-        )
+
+    def refresh_invitation_config(
+        self,
+        *,
+        threshold: Any = _UNSET,
+        auto_approve: Any = _UNSET,
+        without_relationship_policy: Any = _UNSET,
+    ) -> None:
+        """刷新邀请审核运行时配置，不重建 runtime。"""
+        if threshold is not _UNSET:
+            try:
+                parsed_threshold = float(threshold)
+            except (TypeError, ValueError):
+                parsed_threshold = self.invitation_affinity_threshold
+            if math.isfinite(parsed_threshold):
+                self.invitation_affinity_threshold = max(
+                    0.0, min(100.0, parsed_threshold)
+                )
+        if auto_approve is not _UNSET:
+            self.invitation_affinity_auto_approve = _coerce_bool(
+                auto_approve, self.invitation_affinity_auto_approve
+            )
+        if without_relationship_policy is not _UNSET:
+            policy = str(without_relationship_policy or "").strip().casefold()
+            self.invitation_without_relationship_policy = (
+                policy if policy in {"approve", "reject"} else "reject"
+            )
 
     @staticmethod
     def _request_id(parsed: ParsedJoinRequest) -> str:
@@ -364,8 +409,13 @@ class JoinReviewRuntime:
             return "approve" if fallback == "approve" else "reject"
         affinity = await self._inviter_affinity(event, parsed)
         if affinity is None or affinity < self.invitation_affinity_threshold:
+            # 好感不足或不可用：一律转人工审核，绝不据此放行。
             return "pending"
-        return "approve"
+        # 好感达标：默认仍转人工审核（好感只作参考）；仅当显式开启兼容
+        # 开关时，才恢复“好感达标即自动同意”的旧行为。
+        if self.invitation_affinity_auto_approve:
+            return "approve"
+        return "pending"
 
     async def _handle_invitation(
         self, event: Any, parsed: ParsedJoinRequest

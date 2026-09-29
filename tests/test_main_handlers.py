@@ -1108,6 +1108,29 @@ def test_non_pending_outcomes_do_not_push():
         asyncio.run(plugin._handle_request(RequestEvent(), {"request_type": "group"}))
 
 
+def test_missing_join_review_runtime_does_not_use_legacy_invite_path():
+    """新版审核 runtime 缺失时，invite 不得回落到旧的自动审核链。"""
+    plugin = plugin_instance()
+    plugin.config = SimpleNamespace(enable_api_guard=False, join_audit_mode="on")
+    plugin.join_review = None
+    plugin.logger = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+    )
+    plugin.join_audit = SimpleNamespace(
+        handle_request=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("旧 invite 审核链不应被调用")
+        ),
+    )
+
+    asyncio.run(
+        plugin._handle_request(
+            RequestEvent(), {"request_type": "group", "sub_type": "invite"}
+        )
+    )
+
+
 def test_empty_push_groups_still_push_with_source_group_fallback():
     """推送群留空不再静默：交给推送服务回退到申请所属群。"""
     plugin, _, _ = _push_wired_plugin(push_group_ids=())

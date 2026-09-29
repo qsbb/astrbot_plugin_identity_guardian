@@ -42,7 +42,7 @@ class PolicyEngine:
         is_sender_protected = self._is_protected(
             context.requester_id, context.requester_role
         )
-        is_friendly = context.requester_relation in ("owner", "friendly")
+        has_control_authority = self._has_control_authority(context)
 
         if "mute_current_sender" in bot_caps:
             if is_sender_protected and self.config.allow_playful_mute_protected:
@@ -58,7 +58,7 @@ class PolicyEngine:
         if "request_self_mute" in bot_caps:
             descriptions.append("对方可以请求你禁言他自己，目标将由系统绑定为对方本人")
 
-        if "mute_member" in bot_caps and not is_friendly:
+        if "mute_member" in bot_caps and not has_control_authority:
             descriptions.append("对方不能要求你处罚其他成员")
 
         if "set_member_title" in bot_caps:
@@ -182,7 +182,7 @@ class PolicyEngine:
         is_sender_protected = self._is_protected(
             context.requester_id, context.requester_role
         )
-        is_friendly_requester = context.requester_relation in ("owner", "friendly")
+        has_control_authority = self._has_control_authority(context)
         target_is_requester = target is not None and target == context.requester_id
 
         if action == "mute_current_sender":
@@ -195,17 +195,17 @@ class PolicyEngine:
 
         if action == "mute_member":
             return self._check_mute_member(
-                context, params, target, is_friendly_requester
+                context, params, target, has_control_authority
             )
 
         if action == "unmute_member":
             return self._check_unmute_member(
-                context, params, target, is_friendly_requester
+                context, params, target, has_control_authority
             )
 
         if action == "kick_member":
             return self._check_kick_member(
-                context, params, target, is_friendly_requester
+                context, params, target, has_control_authority
             )
 
         if action == "leave_group":
@@ -215,27 +215,29 @@ class PolicyEngine:
             return self._check_join_group(context, params)
 
         if action == "delete_message":
-            return self._check_delete_message(context, params, is_friendly_requester)
+            return self._check_delete_message(context, params, has_control_authority)
 
         if action == "set_member_card":
             return self._check_set_card(
-                context, params, target, is_friendly_requester, target_is_requester
+                context, params, target, has_control_authority, target_is_requester
             )
 
         if action == "set_self_card":
             return ActionDecision(allowed=True, action=action, params=params)
 
         if action == "set_member_title":
-            return self._check_set_title(context, params, target, is_friendly_requester)
+            return self._check_set_title(context, params, target, has_control_authority)
 
         if action == "set_group_admin":
-            return self._check_set_admin(context, params, target)
+            return self._check_set_admin(
+                context, params, target, has_control_authority
+            )
 
         if action == "set_group_name":
-            return self._check_set_group_name(context, params, is_friendly_requester)
+            return self._check_set_group_name(context, params, has_control_authority)
 
         if action == "set_whole_ban":
-            return self._check_whole_ban(context, params, is_friendly_requester)
+            return self._check_whole_ban(context, params, has_control_authority)
 
         # 只读工具默认允许
         if action in ("get_group_member_info", "list_group_members"):
@@ -322,7 +324,7 @@ class PolicyEngine:
         context: ActorContext,
         params: dict[str, Any],
         target: str | None,
-        is_friendly_requester: bool,
+        has_control_authority: bool,
     ) -> ActionDecision:
         """检查 mute_member 授权。"""
         if target is None:
@@ -335,7 +337,7 @@ class PolicyEngine:
                 action="mute_member",
                 reason="目标用户受强保护",
             )
-        if not is_friendly_requester:
+        if not has_control_authority:
             return ActionDecision(
                 allowed=False,
                 action="mute_member",
@@ -363,14 +365,14 @@ class PolicyEngine:
         context: ActorContext,
         params: dict[str, Any],
         target: str | None,
-        is_friendly_requester: bool,
+        has_control_authority: bool,
     ) -> ActionDecision:
-        """检查 unmute_member 授权。解除禁言是低风险操作，友好用户可请求。"""
+        """检查 unmute_member 授权。解除禁言是低风险操作，但仍需操作授权。"""
         if target is None:
             return ActionDecision(
                 allowed=False, action="unmute_member", reason="缺少目标用户"
             )
-        if not is_friendly_requester:
+        if not has_control_authority:
             # 普通成员可以请求解除自己的禁言
             if target != context.requester_id:
                 return ActionDecision(
@@ -385,7 +387,7 @@ class PolicyEngine:
         context: ActorContext,
         params: dict[str, Any],
         target: str | None,
-        is_friendly_requester: bool,
+        has_control_authority: bool,
     ) -> ActionDecision:
         """检查 kick_member 授权。踢出是高风险操作。"""
         if target is None:
@@ -398,7 +400,7 @@ class PolicyEngine:
                 action="kick_member",
                 reason="目标用户受强保护，不可踢出",
             )
-        if not is_friendly_requester:
+        if not has_control_authority:
             return ActionDecision(
                 allowed=False,
                 action="kick_member",
@@ -492,14 +494,37 @@ class PolicyEngine:
             logger.warning("owner/admin leave authorization check failed")
             return False
 
+    def _has_control_authority(self, context: ActorContext) -> bool:
+        """判定请求者是否具备操作授权。
+
+        授权来源必须是明确的 ``control_authority``（平台角色 / 主人 /
+        控制管理员），或回落到与配置一致的显式身份。
+        仅凭 ``requester_relation`` 这一社交标签——尤其是由“情”的好感/关系
+        性质推导出的标签——以及 ``friendly_users`` 配置——不授予任何操作权限；
+        无法确认时一律 fail-closed。
+        """
+        authority = str(getattr(context, "control_authority", "") or "")
+        if authority in ("owner", "control_admin", "platform_role"):
+            return True
+        # 显式给出的未知来源不能再回落到 requester_role；否则旧调用方把
+        # friendly/unknown 误填进 control_authority 时，平台 admin 会被放行。
+        if authority:
+            return False
+        # 兼容：直接构造的旧 ActorContext 没有 control_authority，但请求者
+        # 确实在“序”自己的显式控制配置里（主人/控制管理员），或持有平台
+        # 群主/管理员角色时，仍按既有行为授权。
+        if self.config.is_control_admin(context.requester_id):
+            return True
+        return context.requester_role in ("owner", "admin")
+
     def _check_delete_message(
         self,
         context: ActorContext,
         params: dict[str, Any],
-        is_friendly_requester: bool,
+        has_control_authority: bool,
     ) -> ActionDecision:
         """检查 delete_message 授权。撤回是中风险操作。"""
-        if not is_friendly_requester:
+        if not has_control_authority:
             return ActionDecision(
                 allowed=False,
                 action="delete_message",
@@ -517,7 +542,7 @@ class PolicyEngine:
         context: ActorContext,
         params: dict[str, Any],
         target: str | None,
-        is_friendly_requester: bool,
+        has_control_authority: bool,
         target_is_requester: bool,
     ) -> ActionDecision:
         """检查 set_member_card 授权。"""
@@ -526,13 +551,13 @@ class PolicyEngine:
                 allowed=False, action="set_member_card", reason="缺少目标用户"
             )
         if self._is_protected(target, context.target_role or "member"):
-            if not is_friendly_requester:
+            if not has_control_authority:
                 return ActionDecision(
                     allowed=False,
                     action="set_member_card",
-                    reason="目标受保护且请求者非友好用户",
+                    reason="目标受保护且请求者未具备操作授权",
                 )
-        if not is_friendly_requester and not target_is_requester:
+        if not has_control_authority and not target_is_requester:
             return ActionDecision(
                 allowed=False,
                 action="set_member_card",
@@ -545,7 +570,7 @@ class PolicyEngine:
         context: ActorContext,
         params: dict[str, Any],
         target: str | None,
-        is_friendly_requester: bool,
+        has_control_authority: bool,
     ) -> ActionDecision:
         """检查 set_member_title 授权。只有群主可以设头衔。"""
         if context.bot_role != "owner":
@@ -558,7 +583,7 @@ class PolicyEngine:
             return ActionDecision(
                 allowed=False, action="set_member_title", reason="缺少目标用户"
             )
-        if not is_friendly_requester:
+        if not has_control_authority:
             return ActionDecision(
                 allowed=False,
                 action="set_member_title",
@@ -572,7 +597,11 @@ class PolicyEngine:
         )
 
     def _check_set_admin(
-        self, context: ActorContext, params: dict[str, Any], target: str | None
+        self,
+        context: ActorContext,
+        params: dict[str, Any],
+        target: str | None,
+        has_control_authority: bool,
     ) -> ActionDecision:
         """检查 set_group_admin 授权。"""
         if context.bot_role != "owner":
@@ -580,6 +609,12 @@ class PolicyEngine:
                 allowed=False,
                 action="set_group_admin",
                 reason="仅群主可设置管理员",
+            )
+        if not has_control_authority:
+            return ActionDecision(
+                allowed=False,
+                action="set_group_admin",
+                reason="普通成员不能请求设置群管理员",
             )
         enable = params.get("enable", True)
         if not enable and not self.config.enable_set_admin_revoke:
@@ -596,10 +631,13 @@ class PolicyEngine:
         )
 
     def _check_set_group_name(
-        self, context: ActorContext, params: dict[str, Any], is_friendly: bool
+        self,
+        context: ActorContext,
+        params: dict[str, Any],
+        has_control_authority: bool,
     ) -> ActionDecision:
         """检查 set_group_name 授权。"""
-        if not is_friendly:
+        if not has_control_authority:
             return ActionDecision(
                 allowed=False,
                 action="set_group_name",
@@ -613,10 +651,13 @@ class PolicyEngine:
         )
 
     def _check_whole_ban(
-        self, context: ActorContext, params: dict[str, Any], is_friendly: bool
+        self,
+        context: ActorContext,
+        params: dict[str, Any],
+        has_control_authority: bool,
     ) -> ActionDecision:
         """检查 set_whole_ban 授权。全员禁言是高风险操作。"""
-        if not is_friendly:
+        if not has_control_authority:
             return ActionDecision(
                 allowed=False,
                 action="set_whole_ban",

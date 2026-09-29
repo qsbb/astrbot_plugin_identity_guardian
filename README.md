@@ -173,7 +173,7 @@ git clone https://github.com/qsbb/astrbot_plugin_identity_guardian.git
 | `control_admin_users` | list<string> | `[]` | 机器人控制管理员 QQ 号；其邀请 Bot 入群或要求 Bot 退群时无需普通审核 |
 | `quest_session_owner_bindings` | list<string> | `[]` | Quest 私聊只读上下文的精确绑定，格式为 `api_principal|client_id|platform_id|bot_id|user_id`；还需 `user_id` 已列入 `owner_users`，默认不授权 |
 | `quest_session_read_only_bindings` | list<string> | `[]` | Quest 非主人只读上下文的 `qrb1` 不可逆整组摘要，由临通过正式契约管理；不包含可读账号、不修改 `owner_users`、不授予平台操作权限 |
-| `friendly_users` | list<string> | `[]` | 额外友好用户 QQ 号列表（纯数字字符串）。群主和管理员可按平台身份自动识别，无需重复填写 |
+| `friendly_users` | list<string> | `[]` | 额外友好用户 QQ 号列表（纯数字字符串），只用于关系理解，不授予群管理操作权限。群主和管理员可按平台身份自动识别，无需重复填写 |
 | `protected_users` | list<string> | `[]` | 强保护用户 QQ 号列表（纯数字字符串），禁止被踢出、长时禁言及批量处罚 |
 | `log_level` | string | `INFO` | 日志级别：DEBUG / INFO / WARNING / ERROR |
 
@@ -185,7 +185,8 @@ git clone https://github.com/qsbb/astrbot_plugin_identity_guardian.git
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `invitation_affinity_threshold` | float | `80.0` | 安装情时，邀请人对 Bot 的好感低于此值不会自动接受 Bot 入群邀请；只影响自动接受 |
+| `invitation_affinity_threshold` | float | `80.0` | 安装情时，邀请人对 Bot 的好感参考线；达标默认仍转人工审核 |
+| `invitation_affinity_auto_approve` | bool | `false` | 兼容开关：开启后才恢复“好感达标即自动同意”；默认关闭，好感只作审核参考 |
 | `invitation_without_relationship_policy` | string | `reject` | 未安装情时统一自动 `approve` 或 `reject`；`reject` 会直接向 QQ 提交拒绝 |
 
 机器人控制管理员是序配置中明确填写的 QQ 身份，不是目标群里的普通群管理员。其邀请 Bot 入群、要求 Bot 退群时不进入普通审核队列；用户邀请其他成员入群仍遵循 QQ 平台规则，不受 Bot 入群门禁影响。
@@ -230,7 +231,7 @@ AstrBot 插件详情中的 `pages/join_review` 是当前生效的入群审核控
 Page 还提供独立的「目标群聊」登记。目标群可在 Bot 尚未加入时提前登记，用于等待该群发来的
 Bot 邀请；目标群不会被当作已加入群，也不能直接写入推送目标。收到已登记目标群的 OneBot
 `request_type=group, sub_type=invite` 后，申请不调用 LLM；是否自动接受由下方的情好感阈值或未安装情回退策略决定。
-安装情时，邀请人对 Bot 的好感必须达到 `invitation_affinity_threshold`，低于标准绝不会自动接受。情未安装时则按 `invitation_without_relationship_policy` 统一自动接受或拒绝。这些设置只影响自动路径，Page 人工接受不受影响。`owner_users` 或 `control_admin_users` 中的机器人控制管理员邀请 Bot 入群时直接接受，不走上述好感门禁。非控制管理员的邀请仍要求先在 Page 登记目标群；控制管理员邀请可直接放行，无需目标群登记。QQ 平台本身负责邀请方是否具备目标群管理员资格，序不重复查询或判断该身份。
+安装情时，邀请人对 Bot 的好感仅作审核参考：达到 `invitation_affinity_threshold` 默认仍转人工审核，不会仅凭好感自动同意；只有显式开启 `invitation_affinity_auto_approve` 后才恢复“达标即自动同意”的旧行为。情未安装时则按 `invitation_without_relationship_policy` 统一自动接受或拒绝。这些设置只影响自动路径，Page 人工接受不受影响。`owner_users` 或 `control_admin_users` 中的机器人控制管理员邀请 Bot 入群时直接接受，不走上述好感门禁。非控制管理员的邀请仍要求先在 Page 登记目标群；控制管理员邀请可直接放行，无需目标群登记。QQ 平台本身负责邀请方是否具备目标群管理员资格，序不重复查询或判断该身份。
 管理员可在 Page 点击「接受邀请」或「拒绝邀请」，动作通过原始 OneBot `flag` 事务提交；`flag`
 不会返回给浏览器。相同页面也提供「邀请成员」入口；发起邀请不要求 Bot 是群管理员，普通群成员
 也可以提交，最终由 QQ 群管理在平台侧通过。该入口只在当前适配器明确暴露
@@ -364,7 +365,7 @@ natural 自然语言文案（都会真实调用 `push_llm_provider` 指定的 LL
 
 | 工具 | 说明 |
 | --- | --- |
-| `mute_member` | 禁言指定群成员。仅友好用户（主人 / 管理员）请求时可用 |
+| `mute_member` | 禁言指定群成员。仅主人、控制管理员或当前群主/管理员请求时可用；友好关系本身不授予权限 |
 | `unmute_member` | 解除指定群成员的禁言 |
 | `kick_member` | 踢出指定群成员。高风险操作，需人工确认 |
 | `leave_group` | 退出目标群。仅主人或 `control_admin_users` 中的控制管理员可请求；群内可省略群号使用当前群，私聊必须提供群号；执行前会查询 Bot 成员状态，不支持解散群 |
@@ -452,7 +453,7 @@ ActionDecision = PolicyEngine.evaluate(
 
 ### 防滥用机制
 
-- **关系与保护分离**：`owner_users` / `friendly_users` 用于关系理解，`protected_users` 用于强保护
+- **关系与保护分离**：`owner_users` / `friendly_users` 用于关系理解，`protected_users` 用于强保护；操作授权改由显式 `control_authority`（平台角色 / 主人 / 控制管理员）判定，社交标签 `friendly` 不再直接授予操作权限
 - **参数上限**：禁言时长受 `max_mute_seconds` 约束，LLM 无法突破
 - **冷却**：同一目标同一操作冷却内不重复执行（`action_cooldown_seconds` 已预留，运行时未启用）
 - **分级频率限制**：L0 30 次 / 分钟，L1-L2 10 次 / 分钟，L3 3 次 / 分钟，L4 1 次 / 小时（未实现）

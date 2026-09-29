@@ -147,6 +147,9 @@ class IdentityManager:
         requester_relation = self.relationship.relation_for(
             sender_id, requester_role, bot_role
         )
+        control_authority = self._control_authority_for(
+            sender_id, requester_role
+        )
 
         target_role: str | None = None
         target_relation: str | None = None
@@ -169,7 +172,25 @@ class IdentityManager:
             target_relation=target_relation,
             group_id=group_id,
             platform_id=platform_id,
+            control_authority=control_authority,
         )
+
+    def _control_authority_for(self, user_id: str, user_role: str) -> str:
+        """显式操作授权来源；与社交关系标签解耦。
+
+        - ``owner``：配置中的机器人主人
+        - ``control_admin``：显式映射的控制管理员
+        - ``platform_role``：群主/管理员等平台角色
+        - ``""``：无操作授权
+        """
+        uid = str(user_id)
+        if self.config.is_owner(uid):
+            return "owner"
+        if uid in self.config.control_admin_users:
+            return "control_admin"
+        if user_role in ("owner", "admin"):
+            return "platform_role"
+        return ""
 
     async def get_sender_name(self, event: Any, group_id: str, sender_id: str) -> str:
         """获取发送者显示名称。"""
