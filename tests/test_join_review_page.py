@@ -12,7 +12,7 @@ def read_page(name: str) -> str:
 def test_page_loads_bridge_before_application_script():
     html = read_page("index.html")
     bridge = '<script src="/api/plugin/page/bridge-sdk.js"></script>'
-    app = '<script src="./app.js?v=0.9.1-1"></script>'
+    app = '<script src="./app.js?v=0.9.3-1"></script>'
     assert bridge in html
     assert app in html
     assert html.index(bridge) < html.index(app)
@@ -21,7 +21,7 @@ def test_page_loads_bridge_before_application_script():
 def test_page_uses_incremented_asset_cache_busters():
     html = read_page("index.html")
     for asset in ("style.css", "series-ui.css", "series-ui.js", "app.js"):
-        assert f"{asset}?v=0.9.1-1" in html
+        assert f"{asset}?v=0.9.3-1" in html
 
 
 def test_page_exposes_join_review_api_contract_and_scoped_fields():
@@ -431,3 +431,19 @@ def test_pending_requests_support_keyboard_quick_actions():
     assert "highlightRequestCard(keyboardRequestId, { scroll: false });" in js
     assert "keyboard-hint" in html
     assert ".is-keyboard-current" in css
+
+
+def test_popover_conditional_visibility_for_specified_groups():
+    """通知位置=申请所属群时，指定审核群白名单应收起（仅展示层）。"""
+    js = read_page("app.js")
+    css = read_page("style.css")
+    assert "function syncPopoverConditionalFields(" in js
+    assert 'data-cond-field="specified_group_ids"' in js
+    assert 'data-cond-dep="notify_target"' in js
+    assert 'data-cond-values="specified_groups both"' in js
+    assert 'data-hard-disabled="${disabled ? "true" : "false"}"' in js
+    assert '${group.notify_target === "target_group" ? " hidden" : ""}' in js
+    assert "input.disabled = !visible || input.dataset.hardDisabled === \"true\"" in js
+    assert "syncPopoverConditionalFields(popover);" in js
+    assert "syncPopoverConditionalFields(popover);\n      showFormError" in js
+    assert ".popover-field[hidden]" in css

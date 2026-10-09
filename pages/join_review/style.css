@@ -657,6 +657,10 @@ body[data-series-ui] .reject-reason-input:focus { border-color: var(--si-danger)
   gap: 4px;
 }
 
+.popover-field[hidden] {
+  display: none;
+}
+
 .popover-field > span {
   color: var(--si-muted);
   font-size: 12px;

@@ -596,6 +596,21 @@ function jqItemMarkup(item, disabled) {
   </div>`;
 }
 
+// 条件展示：按依赖选择项的当前值显隐弹窗内的从属字段。仅影响展示。
+function syncPopoverConditionalFields(container) {
+  if (!container) return;
+  container.querySelectorAll("[data-cond-field]").forEach((node) => {
+    const depName = node.dataset.condDep;
+    const allowed = String(node.dataset.condValues || "").split(/\s+/).filter(Boolean);
+    const depEl = container.querySelector(`[data-field='${depName}']`);
+    const current = depEl ? String(depEl.value || "") : "";
+    const visible = allowed.includes(current);
+    node.hidden = !visible;
+    const input = node.querySelector("[data-field]");
+    if (input) input.disabled = !visible || input.dataset.hardDisabled === "true";
+  });
+}
+
 function popoverFieldMarkup(group, disabled) {
   const notificationDisabled = group.notify_target === "target_group" || disabled;
   return `
@@ -613,7 +628,7 @@ function popoverFieldMarkup(group, disabled) {
       <option value="specified_groups"${group.notify_target === "specified_groups" ? " selected" : ""}>指定审核群</option>
       <option value="both"${group.notify_target === "both" ? " selected" : ""}>两边发送</option>
     </select></label>
-    <label class="popover-field"><span>指定审核群白名单</span><input class="group-whitelist editable-control" data-field="specified_group_ids" type="text" inputmode="numeric" maxlength="2099" placeholder="群号，逗号分隔" value="${escapeHtml(group.specified_group_ids.join(", "))}"${notificationDisabled ? " disabled" : ""}></label>
+    <label class="popover-field" data-cond-field="specified_group_ids" data-cond-dep="notify_target" data-cond-values="specified_groups both"${group.notify_target === "target_group" ? " hidden" : ""}><span>指定审核群白名单</span><input class="group-whitelist editable-control" data-field="specified_group_ids" data-hard-disabled="${disabled ? "true" : "false"}" type="text" inputmode="numeric" maxlength="2099" placeholder="群号，逗号分隔" value="${escapeHtml(group.specified_group_ids.join(", "))}"${group.notify_target === "target_group" || disabled ? " disabled" : ""}></label>
     <label class="popover-field"><span>推送群（留空回退申请所属群）</span><input class="group-whitelist editable-control" data-field="push_group_ids" type="text" inputmode="numeric" maxlength="2099" placeholder="群号，逗号分隔" value="${escapeHtml(group.push_group_ids.join(", "))}"${disabled ? " disabled" : ""}></label>
     <label class="popover-field"><span>推送样式</span><select class="inline-select editable-control" data-field="push_style"${disabled ? " disabled" : ""}>
       <option value="formatted"${group.push_style === "formatted" ? " selected" : ""}>格式化</option>
@@ -666,6 +681,7 @@ async function openGroupPopover(key, anchor) {
   popover.dataset.groupKey = key;
   const busy = state.rowBusy.has(key);
   popover.innerHTML = popoverFieldMarkup(group, busy || !group.joined || !group.can_review);
+  syncPopoverConditionalFields(popover);
   popover.classList.remove("hidden");
   positionGroupPopover(anchor);
   $(".editable-control", popover)?.focus();
@@ -1755,9 +1771,7 @@ function bindEvents() {
   const popover = popoverElement();
   popover.addEventListener("change", (event) => {
     if (event.target.matches("[data-field='notify_target']")) {
-      const whitelist = $("[data-field='specified_group_ids']", popover);
-      const group = state.groupMap.get(popover.dataset.groupKey);
-      whitelist.disabled = event.target.value === "target_group" || !group?.can_review;
+      syncPopoverConditionalFields(popover);
       showFormError(popover, "");
     }
     if (event.target.matches("[data-field='auto_audit_enabled'], [data-field='review_send_enabled'], [data-field='include_answer'], [data-field='pinned']")) {
