@@ -39,7 +39,8 @@ _DECISION_OPINION: dict[str, str] = {
 
 def resolve_push_targets(request: JoinRequest, config: GroupReviewConfig) -> list[str]:
     """解析申请的实际推送目标群：push_group_ids 非空时按配置，否则回退申请所属群。"""
-    return list(config.push_group_ids) or [request.group_id]
+    configured = getattr(config, "push_group_ids", None) or []
+    return list(configured) or [request.group_id]
 
 
 def build_opinion_line(decision: Any, *, include_reason: bool = True) -> str:
@@ -63,12 +64,14 @@ def _formatted_message(
     source_group_name: str,
     decision: Any = None,
     opinion: str = "",
+    *,
+    show_source: bool = True,
 ) -> str:
     body = JoinNotificationService.build_message(
         request,
         include_answer=config.include_answer,
         source_group_name=source_group_name,
-        show_source=True,
+        show_source=show_source,
     )
     opinion_line = (
         f"看法：{opinion}"
@@ -109,6 +112,8 @@ async def render_push_preview(
     source_group_name: str,
     llm_caller: Any,
     decision: Any = None,
+    *,
+    show_source: bool | None = None,
 ) -> dict[str, str]:
     """零副作用渲染推送文案，返回 ``{"style", "text", "opinion_source"}``。
 
@@ -119,6 +124,12 @@ async def render_push_preview(
     两种样式合计最多一次额外 LLM 调用：natural 整段生成已含看法，不再单独
     生成；natural 回退格式化时 LLM 刚失败过，看法直接用自动审核结论。
     """
+    if show_source is None:
+        # 目标全是申请所属群时不必报来源群：群里的人本来就在这个群。
+        show_source = any(
+            str(gid) != str(request.group_id)
+            for gid in resolve_push_targets(request, config)
+        )
     style = "formatted"
     opinion = ""
     include_answer = bool(getattr(config, "include_answer", True))
@@ -126,7 +137,9 @@ async def render_push_preview(
         text = ""
         try:
             result = await llm_caller(
-                build_push_message_prompt(request, source_group_name)
+                build_push_message_prompt(
+                    request, source_group_name, show_source=show_source
+                )
             )
             text = "" if result is None else str(result).strip()
         except Exception:
@@ -143,7 +156,9 @@ async def render_push_preview(
         # hidden answer. Prefer deterministic redacted formatting instead.
         style = "natural_redacted_formatted"
     elif include_answer:
-        opinion = await _llm_opinion(request, source_group_name, llm_caller)
+        opinion = await _llm_opinion(
+            request, source_group_name if show_source else "（本群）", llm_caller
+        )
     if opinion:
         opinion_source = "llm"
     elif decision is not None:
@@ -153,7 +168,12 @@ async def render_push_preview(
     return {
         "style": style,
         "text": _formatted_message(
-            request, config, source_group_name, decision, opinion
+            request,
+            config,
+            source_group_name,
+            decision,
+            opinion,
+            show_source=show_source,
         ),
         "opinion_source": opinion_source,
     }
@@ -171,10 +191,17 @@ class RequestPushService:
         source_group_name: str,
         llm_caller: Any,
         decision: Any = None,
+        *,
+        show_source: bool | None = None,
     ) -> str:
         """渲染推送文案；natural 走 LLM，空结果或异常回退格式化模板。"""
         preview = await render_push_preview(
-            request, config, source_group_name, llm_caller, decision
+            request,
+            config,
+            source_group_name,
+            llm_caller,
+            decision,
+            show_source=show_source,
         )
         return preview["text"]
 
@@ -203,7 +230,8 @@ class RequestPushService:
         # bot 仅用于解析来源群名，取不到不影响推送。
         source_group_name = await self._source_group_name(bot, request)
 
-        message: str | None = None
+        # 按 show_source 缓存：每个目标群是否要报来源群不同，但最多两种。
+        messages: dict[bool, str] = {}
         sent: list[str] = []
         skipped: list[str] = []
         failed: list[str] = []
@@ -215,10 +243,17 @@ class RequestPushService:
                 skipped.append(gid)
                 continue
             try:
-                if message is None:
-                    message = await self.render_message(
-                        request, config, source_group_name, llm_caller, decision
+                show_source = str(gid) != str(request.group_id)
+                if show_source not in messages:
+                    messages[show_source] = await self.render_message(
+                        request,
+                        config,
+                        source_group_name,
+                        llm_caller,
+                        decision,
+                        show_source=show_source,
                     )
+                message = messages[show_source]
                 ok, message_id, err = await self.onebot.send_group_message_with_id(
                     bot, int(gid), message
                 )

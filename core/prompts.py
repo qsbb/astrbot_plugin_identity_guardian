@@ -78,7 +78,7 @@ PUSH_MESSAGE_PROMPT = """你是本群的 bot。有人递了入群申请，你要
 - 等级：{level}
 - 入群问题：{question}
 - 他的答案：{answer}
-- 从哪来的：{source_group_name}（{source_group_id}）
+- 从哪来的：{source_group}
 
 怎么说：
 - 像在群里随口提一嘴，不是发公告，也不是填表。
@@ -86,6 +86,7 @@ PUSH_MESSAGE_PROMPT = """你是本群的 bot。有人递了入群申请，你要
 - 空着的项不要一个个说「未知」「未填写」。几项都空就合成一句，
   比如「名字等级答案全空着」。空一项就顺口带过。
 - 可以有态度（这人靠不靠谱、要不要放），但决定权在管理员。
+- 来源群如果标的是本群，就完全不要提他从哪个群来，只说他来申请。
 - 结尾必须让他们知道「引用这条消息回复」——靠引用才认得出是哪个申请。
   这句话要说得自然，但必须出现「引用」两个字。不许解释背后的机制，
   不许出现「审批机制」「定位到」「工单」「流程」这类词。
@@ -212,8 +213,14 @@ def build_answer_judge_prompt(
 def build_push_message_prompt(
     request: Any,
     source_group_name: str,
+    *,
+    show_source: bool = True,
 ) -> str:
-    """构建入群申请推送的自然语言文案生成提示词。"""
+    """构建入群申请推送的自然语言文案生成提示词。
+
+    ``show_source=False`` 表示推送目标就是申请所属群本身，此时再报一遍群名
+    只是噪音（群里的人本来就在这个群），改为让模型完全不提来源。
+    """
     def _field(name: str) -> str:
         # 空值必须标成「（没填）」而不是「未知」：模型会照着这个词复读出
         # 「昵称等级答案全未知」，这正是人机感的直接来源。
@@ -225,8 +232,11 @@ def build_push_message_prompt(
         level=_field("level"),
         question=_field("question"),
         answer=_field("answer"),
-        source_group_name=source_group_name or "（没填）",
-        source_group_id=_field("group_id"),
+        source_group=(
+            f"{source_group_name or '（没填）'}（{_field('group_id')}）"
+            if show_source
+            else "（就是本群，正文里不要提来源）"
+        ),
     )
 
 

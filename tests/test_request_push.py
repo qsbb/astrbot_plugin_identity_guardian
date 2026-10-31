@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.join_review_store import JoinReviewStore
+from core.prompts import build_push_message_prompt
 from core.onebot import OneBotClient
 from core.request_push import (
     PUSH_REPLY_HINT,
@@ -597,3 +598,50 @@ def test_resolve_push_targets_uses_configured_groups(tmp_path):
     request = add_request(store)
     config = make_config(store, push_group_ids=["300", "301"])
     assert resolve_push_targets(request, config) == ["300", "301"]
+
+
+# ------------------------------------------------------------------
+# 来源群：推送到申请群本身时不该再报一遍群名
+# ------------------------------------------------------------------
+
+
+def test_prompt_omits_source_group_when_show_source_false():
+    request = SimpleNamespace(
+        nickname="阿柴",
+        user_id="200",
+        level="32",
+        question="口令？",
+        answer="溪流",
+        group_id="100",
+    )
+    shown = build_push_message_prompt(request, "不要摸鱼了喵", show_source=True)
+    hidden = build_push_message_prompt(request, "不要摸鱼了喵", show_source=False)
+
+    assert "不要摸鱼了喵" in shown and "100" in shown
+    assert "不要摸鱼了喵" not in hidden
+    # 不能把「不提来源」变成模型要去提的元素，得明确说这就是本群。
+    assert "就是本群" in hidden
+
+
+def test_preview_hides_source_group_when_target_is_own_group(tmp_path):
+    """push_group_ids 为空即推送到申请所属群本身，此时不提来源群。"""
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_group_ids=[])
+
+    preview = run(render_push_preview(request, config, "申请群", None))
+
+    assert preview["style"] == "formatted"
+    assert "来自「" not in preview["text"]
+    assert "有人申请进群" in preview["text"]
+
+
+def test_preview_keeps_source_group_for_other_target_group(tmp_path):
+    """发到别的审核群时必须报来源，否则审核群不知道申请人从哪来。"""
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store)  # push_group_ids=["300"]
+
+    preview = run(render_push_preview(request, config, "申请群", None))
+
+    assert "来自「申请群」（100）" in preview["text"]

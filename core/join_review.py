@@ -6,7 +6,7 @@ import hashlib
 import inspect
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .audit import AutoAuditResult, JoinAuditService
@@ -246,9 +246,41 @@ class JoinReviewRuntime:
                 raise
             return duplicate
 
+    async def _enrich_profile(
+        self, event: Any, parsed: ParsedJoinRequest
+    ) -> ParsedJoinRequest:
+        """补齐昵称与等级。
+
+        OneBot 的 group_request 事件不带 nickname / level（本机实测 15 条申请
+        全为空串），只能靠 get_stranger_info 主动查；NapCat 的
+        getUserDetailInfo 会返回 nick 与 qqLevel。查不到就保持原样，既不编造
+        也不拦下申请。
+        """
+        if parsed.nickname and parsed.level:
+            return parsed
+        try:
+            raw = await self.onebot.call(
+                event, "get_stranger_info", user_id=int(parsed.user_id)
+            )
+        except Exception:
+            return parsed
+        data = raw.get("data") if isinstance(raw, dict) and "data" in raw else raw
+        if not isinstance(data, dict):
+            return parsed
+        nickname = parsed.nickname or str(
+            data.get("nickname") or data.get("nick") or ""
+        ).strip()
+        level = parsed.level or str(
+            data.get("qqLevel") or data.get("level") or ""
+        ).strip()
+        if nickname == parsed.nickname and level == parsed.level:
+            return parsed
+        return replace(parsed, nickname=nickname, level=level)
+
     async def handle_event(self, event: Any, raw: dict[str, Any]) -> JoinReviewResult:
         parsed = parse_join_request(event, raw)
         if parsed.sub_type == "invite":
+            parsed = await self._enrich_profile(event, parsed)
             return await self._handle_invitation(event, parsed)
         # OneBot may add request sub-types in the future. Do not feed an
         # unknown request into the question/answer auditor by accident.
@@ -257,6 +289,7 @@ class JoinReviewRuntime:
         config = await self.store.get_group_config(parsed.platform_id, parsed.group_id)
         if not config.auto_audit_enabled and not config.review_send_enabled:
             return JoinReviewResult("ignored")
+        parsed = await self._enrich_profile(event, parsed)
 
         # A repeated OneBot request event resolves to the same opaque request ID.
         # Finalized records must be terminal: do not re-run auto-audit or emit a

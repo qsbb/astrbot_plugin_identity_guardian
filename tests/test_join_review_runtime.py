@@ -21,6 +21,7 @@ class Bot:
         self.calls: list[tuple[str, dict]] = []
         self.fail_approval = False
         self.fail_send_groups: set[int] = set()
+        self.fail_stranger_info = False
 
     async def call_action(self, action: str, **params):
         self.calls.append((action, params))
@@ -35,6 +36,14 @@ class Bot:
                     "max_member_count": 200,
                 }
             ]
+        if action == "get_stranger_info":
+            if self.fail_stranger_info:
+                raise RuntimeError("stranger info unavailable")
+            return {
+                "user_id": params["user_id"],
+                "nickname": "路人甲",
+                "qqLevel": 32,
+            }
         if action == "get_group_member_info":
             return {"role": "admin"}
         if action == "get_group_info":
@@ -705,3 +714,51 @@ def test_per_group_presets_passed_to_audit_and_fallback_to_global(tmp_path):
     configure(store2, auto=True, send=False)
     run(runtime2.handle_event(event2, raw_request()))
     assert audit2.presets_seen == [None]
+
+
+# ------------------------------------------------------------------
+# 昵称/等级补查
+# ------------------------------------------------------------------
+
+
+def test_join_request_enriches_nickname_and_level(tmp_path):
+    """group_request 事件不带 nickname/level，必须靠 get_stranger_info 补。
+
+    本机 join_review.json 里 15 条历史申请的这两项全是空串，所以生成文案
+    只能写「没填」。补查之后昵称和 QQ 等级都能拿到。
+    """
+    runtime, store, audit, event, bot = make_runtime(tmp_path)
+    configure(store, auto=False, send=True)
+    run(runtime.handle_event(event, raw_request()))
+
+    saved = run(store.list_requests())[-1]
+    assert saved.nickname == "路人甲"
+    assert saved.level == "32"
+    assert any(
+        name == "get_stranger_info" and params.get("user_id") == 200
+        for name, params in bot.calls
+    )
+
+
+def test_enrich_skips_api_when_fields_already_present(tmp_path):
+    runtime, store, audit, event, bot = make_runtime(tmp_path)
+    configure(store, auto=False, send=True)
+    run(runtime.handle_event(event, raw_request(nickname="阿柴", level="16")))
+
+    saved = run(store.list_requests())[-1]
+    assert saved.nickname == "阿柴"
+    assert saved.level == "16"
+    assert not any(name == "get_stranger_info" for name, _ in bot.calls)
+
+
+def test_enrich_tolerates_api_failure(tmp_path):
+    """查不到就保持原样：既不编造昵称，也不因此拦下申请。"""
+    runtime, store, audit, event, bot = make_runtime(tmp_path)
+    bot.fail_stranger_info = True
+    configure(store, auto=False, send=True)
+    result = run(runtime.handle_event(event, raw_request()))
+
+    assert result.outcome != "ignored"
+    saved = run(store.list_requests())[-1]
+    assert saved.nickname == ""
+    assert saved.level == ""
