@@ -1601,7 +1601,7 @@ def test_simulate_push_preview_natural_uses_persona_and_contexts():
 
     async def push_llm(prompt, system_prompt="", contexts=None):
         llm_calls.append((prompt, system_prompt, contexts))
-        return "人格化预览文案"
+        return "人格化预览文案，引用这条"
 
     plugin._get_push_persona_prompt = persona
     plugin._call_push_llm = push_llm
@@ -1619,7 +1619,7 @@ def test_simulate_push_preview_natural_uses_persona_and_contexts():
     )
 
     assert preview["style"] == "natural"
-    assert preview["text"] == "人格化预览文案"
+    assert preview["text"] == "人格化预览文案，引用这条"
     assert preview["opinion_source"] == "llm"
     assert preview["persona_used"] is True
     assert preview["provider"] == "push-llm"
@@ -1663,7 +1663,7 @@ def test_simulate_push_preview_formatted_uses_llm_opinion():
     assert preview["opinion_source"] == "llm"
     assert "看法：答案靠谱，正是群内暗号" in preview["text"]
     assert "模拟用户" in preview["text"]
-    assert "回复『同意』" in preview["text"]
+    assert "回「同意」" in preview["text"]
     assert len(llm_calls) == 1
     prompt, _, _ = llm_calls[0]
     assert "口令？" in prompt and "小河" in prompt
@@ -1765,7 +1765,7 @@ def test_production_push_formatted_also_calls_push_llm_for_opinion(tmp_path):
     assert system_prompt == "人格 prompt"
     assert len(sent) == 1
     assert "看法：答案看着靠谱" in sent[0]
-    assert "回复『同意』" in sent[0]
+    assert "回「同意」" in sent[0]
 
 
 def test_simulate_push_preview_natural_failure_marks_fallback():
@@ -1797,7 +1797,7 @@ def test_simulate_push_preview_natural_failure_marks_fallback():
     assert preview["style"] == "natural_fallback_formatted"
     # natural 回退后不重试看法生成：看法直接取自动审核结论
     assert preview["opinion_source"] == "decision"
-    assert "入群申请待审核" in preview["text"]
+    assert "有人申请进群" in preview["text"]
 
 
 # ----------------------------------------------------- 审批结果回复人格化

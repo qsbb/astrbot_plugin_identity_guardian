@@ -482,7 +482,7 @@ def test_notification_variants_whitelist_and_idempotency(tmp_path):
     assert second.skipped == ("100", "300")
     messages = [params for action, params in bot.calls if action == "send_group_msg"]
     assert "来源群" not in messages[0]["message"]
-    assert "来源群：申请群（100）" in messages[1]["message"]
+    assert "来自「申请群」（100）" in messages[1]["message"]
     assert "答案：" not in messages[0]["message"]
     assert {item["group_id"] for item in messages} == {100, 300}
 

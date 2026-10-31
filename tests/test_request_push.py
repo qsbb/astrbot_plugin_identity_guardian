@@ -134,9 +134,9 @@ def test_render_formatted_has_answer_source_opinion_and_reply_hint(tmp_path):
         service.render_message(request, config, "申请群", None, make_decision())
     )
 
-    assert "入群申请待审核" in message
-    assert "答案：溪流" in message
-    assert "来源群：申请群（100）" in message
+    assert "有人申请进群" in message
+    assert "他答：溪流" in message
+    assert "来自「申请群」（100）" in message
     assert "看法：自动审核建议通过" in message
     assert PUSH_REPLY_HINT in message
 
@@ -212,11 +212,11 @@ def test_render_natural_uses_llm_caller_and_asks_for_opinion(tmp_path):
 
     async def llm_caller(prompt: str) -> str:
         prompts.append(prompt)
-        return "自然语言通知文案"
+        return "门口有人，引用这条说一声"
 
     message = run(service.render_message(request, config, "申请群", llm_caller))
 
-    assert message == "自然语言通知文案"
+    assert message == "门口有人，引用这条说一声"
     assert len(prompts) == 1
     prompt = prompts[0]
     # natural 提示词只给全部事实 + 场景，让 AI 按人设自由措辞
@@ -239,7 +239,7 @@ def test_render_natural_falls_back_on_empty_llm(tmp_path, llm_result):
 
     message = run(service.render_message(request, config, "申请群", llm_caller))
 
-    assert "入群申请待审核" in message
+    assert "有人申请进群" in message
     assert PUSH_REPLY_HINT in message
 
 
@@ -253,8 +253,8 @@ def test_render_natural_falls_back_on_llm_exception(tmp_path):
 
     message = run(service.render_message(request, config, "申请群", llm_caller))
 
-    assert "入群申请待审核" in message
-    assert "答案：溪流" in message
+    assert "有人申请进群" in message
+    assert "他答：溪流" in message
 
 
 # ------------------------------------------------------------------
@@ -314,7 +314,7 @@ def test_push_success_via_onebot_and_records_push_ref(tmp_path):
     # 文案只渲染一次，逐群群发同一内容，带来源群、看法与审批引导
     texts = [text for _, text in bot.sent]
     assert texts[0] == texts[1]
-    assert "来源群：申请群（100）" in texts[0]
+    assert "来自「申请群」（100）" in texts[0]
     assert "看法：自动审核建议通过" in texts[0]
     assert PUSH_REPLY_HINT in texts[0]
 
@@ -364,14 +364,14 @@ def test_push_natural_style_uses_llm(tmp_path):
     context = FakeContext(bot=bot)
 
     async def llm_caller(prompt: str) -> str:
-        return "人格化审核请求文案"
+        return "人格化审核请求文案，引用这条回我"
 
     sent, _, failed = _push(
         service, store, context, config=config, llm_caller=llm_caller
     )
 
     assert sent == ["300"] and failed == []
-    assert bot.sent[0][1] == "人格化审核请求文案"
+    assert bot.sent[0][1] == "人格化审核请求文案，引用这条回我"
 
 
 # ------------------------------------------------------------------
@@ -388,7 +388,7 @@ def test_preview_formatted_marks_style(tmp_path):
 
     assert preview["style"] == "formatted"
     assert preview["opinion_source"] == "decision"
-    assert "入群申请待审核" in preview["text"]
+    assert "有人申请进群" in preview["text"]
     assert "看法：自动审核建议通过" in preview["text"]
     assert PUSH_REPLY_HINT in preview["text"]
 
@@ -399,11 +399,31 @@ def test_preview_natural_success_marks_style(tmp_path):
     config = make_config(store, push_style="natural")
 
     async def llm_caller(prompt: str) -> str:
-        return "自然文案"
+        return "自然文案，引用这条回我"
 
     preview = run(render_push_preview(request, config, "申请群", llm_caller))
 
-    assert preview == {"style": "natural", "text": "自然文案", "opinion_source": "llm"}
+    assert preview == {
+        "style": "natural",
+        "text": "自然文案，引用这条回我",
+        "opinion_source": "llm",
+    }
+
+
+def test_preview_natural_appends_reply_hint_when_model_omits_it(tmp_path):
+    """模型漏掉「引用」时补一句最短引导：审批靠引用定位，漏了机制就断。"""
+    _, store = make_service(tmp_path)
+    request = add_request(store)
+    config = make_config(store, push_style="natural")
+
+    async def llm_caller(prompt: str) -> str:
+        return "门口有人，啥都没填。"
+
+    preview = run(render_push_preview(request, config, "申请群", llm_caller))
+
+    assert preview["style"] == "natural"
+    assert preview["text"].startswith("门口有人，啥都没填。")
+    assert "引用" in preview["text"]
 
 
 @pytest.mark.parametrize("llm_result", ["", "   ", None])
@@ -424,7 +444,7 @@ def test_preview_natural_empty_falls_back_and_marks_style(tmp_path, llm_result):
 
     assert preview["style"] == "natural_fallback_formatted"
     assert preview["opinion_source"] == "decision"
-    assert "入群申请待审核" in preview["text"]
+    assert "有人申请进群" in preview["text"]
     assert "看法：自动审核建议通过" in preview["text"]
     assert PUSH_REPLY_HINT in preview["text"]
     # natural 整段生成已含看法，回退后不重复调 LLM 生成看法
@@ -443,7 +463,7 @@ def test_preview_natural_exception_falls_back_and_marks_style(tmp_path):
 
     assert preview["style"] == "natural_fallback_formatted"
     assert preview["opinion_source"] == "none"
-    assert "答案：溪流" in preview["text"]
+    assert "他答：溪流" in preview["text"]
 
 
 def test_preview_shares_render_path_with_render_message(tmp_path):

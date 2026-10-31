@@ -26,7 +26,7 @@ from .onebot import OneBotClient
 from .prompts import build_push_message_prompt, build_push_opinion_prompt
 
 PUSH_REPLY_HINT = (
-    "同意请引用本条消息回复『同意』，拒绝回复『拒绝』，或到入群审核管理页处理。"
+    "放他进来就引用这条回「同意」，不放回「拒绝」；也可以到入群审核管理页处理。"
 )
 
 _DECISION_OPINION: dict[str, str] = {
@@ -132,6 +132,10 @@ async def render_push_preview(
         except Exception:
             text = ""
         if text:
+            # 审批靠引用定位，模型偶尔会漏掉这句话，漏了机制就断。
+            # 不重生成、不丢弃，只在末尾补一句最短的引导。
+            if "引用" not in text:
+                text = f"{text}\n要定的话，引用这条回一句就行。"
             return {"style": "natural", "text": text, "opinion_source": "llm"}
         style = "natural_fallback_formatted"
     elif config.push_style == "natural" and not include_answer:

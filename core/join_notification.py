@@ -41,18 +41,20 @@ class JoinNotificationService:
         source_group_name: str = "未知群名",
         show_source: bool = False,
     ) -> str:
+        # 空值说「没填」而不是「未知」：后者是表格语言，念出来就是人机感。
+        def _val(value: Any) -> str:
+            return str(value or "").strip() or "没填"
+
         lines = [
-            "入群申请待审核",
-            f"昵称：{request.nickname or '未知'}",
-            f"QQ：{request.user_id}",
-            f"等级：{request.level or '未知'}",
-            f"问题：{request.question or '未知'}",
+            f"有人申请进群：{_val(request.user_id)}",
+            f"昵称 {_val(request.nickname)}｜等级 {_val(request.level)}",
+            f"问题：{_val(request.question)}",
         ]
         if include_answer:
-            lines.append(f"答案：{request.answer or '未知'}")
+            lines.append(f"他答：{_val(request.answer)}")
         if show_source:
             lines.append(
-                f"来源群：{source_group_name or '未知群名'}（{request.group_id}）"
+                f"来自「{source_group_name or '未知群名'}」（{request.group_id}）"
             )
         return "\n".join(lines)
 

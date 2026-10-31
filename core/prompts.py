@@ -70,20 +70,33 @@ ANSWER_JUDGE_PROMPT = """你是一个入群问答审核助手。判断用户的�
 - uncertain：无法判断（如知识不足、表述模糊）"""
 
 
-PUSH_MESSAGE_PROMPT = """你是本群的 bot。现在有一个新的入群申请，需要你以自己的人设在群里
-说一段话，向管理员/群主征求意见。措辞、结构、语气都由你自由发挥。
-与申请有关的全部事实如下：
-- 申请人昵称：{nickname}
-- 申请人 QQ：{user_id}
+PUSH_MESSAGE_PROMPT = """你是本群的 bot。有人递了入群申请，你要在群里招呼一声，让管理员/群主定夺。
+
+手上这些信息，有的可能是空的：
+- 昵称：{nickname}
+- QQ：{user_id}
 - 等级：{level}
 - 入群问题：{question}
-- 申请人答案：{answer}
-- 来源群：{source_group_name}（{source_group_id}）
-唯一硬性要求：必须引导管理员「引用本条消息回复同意或拒绝」来表达决定
-（审批机制依赖引用定位到这条申请）；建议带上申请人 QQ 便于追溯。
-你可以自由评价这个申请靠不靠谱、要不要放他进来，除此之外不设限制。
-只输出纯文本，不要使用 markdown，不超过 300 字，
-不要输出与本次通知无关的内容。"""
+- 他的答案：{answer}
+- 从哪来的：{source_group_name}（{source_group_id}）
+
+怎么说：
+- 像在群里随口提一嘴，不是发公告，也不是填表。
+- 别把字段逐个念出来。QQ 号可以直接当主语，比如「123456 在门口」。
+- 空着的项不要一个个说「未知」「未填写」。几项都空就合成一句，
+  比如「名字等级答案全空着」。空一项就顺口带过。
+- 可以有态度（这人靠不靠谱、要不要放），但决定权在管理员。
+- 结尾必须让他们知道「引用这条消息回复」——靠引用才认得出是哪个申请。
+  这句话要说得自然，但必须出现「引用」两个字。不许解释背后的机制，
+  不许出现「审批机制」「定位到」「工单」「流程」这类词。
+- 纯文本，不用 markdown，两三句话，不超过 80 字。
+
+反例（不要写成这样）：
+「有个新入群申请：申请人 QQ 123456，来源群「某群」（789），昵称等级问题答案全未知。
+请管理员或群主引用本条消息回复同意或拒绝，好让审批机制定位到他。」
+
+好例子（这样就行）：
+「门口有人 123456，隔壁「某群」过来的，名字等级答案全空着。放不放？引用这条说一声。」"""
 
 
 PUSH_OPINION_PROMPT = """请用一两句话评价以下待审入群申请：答案靠不靠谱、理由是什么，
@@ -201,14 +214,19 @@ def build_push_message_prompt(
     source_group_name: str,
 ) -> str:
     """构建入群申请推送的自然语言文案生成提示词。"""
+    def _field(name: str) -> str:
+        # 空值必须标成「（没填）」而不是「未知」：模型会照着这个词复读出
+        # 「昵称等级答案全未知」，这正是人机感的直接来源。
+        return str(getattr(request, name, "") or "").strip() or "（没填）"
+
     return PUSH_MESSAGE_PROMPT.format(
-        nickname=str(getattr(request, "nickname", "") or "未知"),
-        user_id=str(getattr(request, "user_id", "") or "未知"),
-        level=str(getattr(request, "level", "") or "未知"),
-        question=str(getattr(request, "question", "") or "未知"),
-        answer=str(getattr(request, "answer", "") or "未知"),
-        source_group_name=source_group_name or "未知群名",
-        source_group_id=str(getattr(request, "group_id", "") or "未知"),
+        nickname=_field("nickname"),
+        user_id=_field("user_id"),
+        level=_field("level"),
+        question=_field("question"),
+        answer=_field("answer"),
+        source_group_name=source_group_name or "（没填）",
+        source_group_id=_field("group_id"),
     )
 
 
