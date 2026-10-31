@@ -70,34 +70,20 @@ ANSWER_JUDGE_PROMPT = """你是一个入群问答审核助手。判断用户的�
 - uncertain：无法判断（如知识不足、表述模糊）"""
 
 
-PUSH_MESSAGE_PROMPT = """你是本群的 bot。有人递了入群申请，你要在群里招呼一声，让管理员/群主定夺。
+PUSH_MESSAGE_PROMPT = """群里有新的入群申请，你去群里问一声，让管理员/群主定夺。
 
-手上这些信息，有的可能是空的：
-- 昵称：{nickname}
-- QQ：{user_id}
+申请信息：
+- 名字：{nickname}
 - 等级：{level}
 - 入群问题：{question}
-- 他的答案：{answer}
-- 从哪来的：{source_group}
+- 他的答案：{answer}{source_block}
 
-怎么说：
-- 像在群里随口提一嘴，不是发公告，也不是填表。
-- 别把字段逐个念出来。QQ 号可以直接当主语，比如「123456 在门口」。
-- 空着的项不要一个个说「未知」「未填写」。几项都空就合成一句，
-  比如「名字等级答案全空着」。空一项就顺口带过。
-- 可以有态度（这人靠不靠谱、要不要放），但决定权在管理员。
-- 来源群如果标的是本群，就完全不要提他从哪个群来，只说他来申请。
-- 结尾必须让他们知道「引用这条消息回复」——靠引用才认得出是哪个申请。
-  这句话要说得自然，但必须出现「引用」两个字。不许解释背后的机制，
-  不许出现「审批机制」「定位到」「工单」「流程」这类词。
-- 纯文本，不用 markdown，两三句话，不超过 80 字。
-
-反例（不要写成这样）：
-「有个新入群申请：申请人 QQ 123456，来源群「某群」（789），昵称等级问题答案全未知。
-请管理员或群主引用本条消息回复同意或拒绝，好让审批机制定位到他。」
-
-好例子（这样就行）：
-「门口有人 123456，隔壁「某群」过来的，名字等级答案全空着。放不放？引用这条说一声。」"""
+要求：
+- 就是平常在群里说话，措辞、长短、语气都随你。
+- 不要出现申请人的 QQ 号。
+- 结尾必须让他们知道「引用这条消息回复」，靠引用才认得出是哪个申请。
+- 空着的项别一个个念，几项都空就一句带过。
+- 纯文本，不用 markdown。"""
 
 
 PUSH_OPINION_PROMPT = """请用一两句话评价以下待审入群申请：答案靠不靠谱、理由是什么，
@@ -228,14 +214,13 @@ def build_push_message_prompt(
 
     return PUSH_MESSAGE_PROMPT.format(
         nickname=_field("nickname"),
-        user_id=_field("user_id"),
         level=_field("level"),
         question=_field("question"),
         answer=_field("answer"),
-        source_group=(
-            f"{source_group_name or '（没填）'}（{_field('group_id')}）"
+        source_block=(
+            f"\n- 来源：{source_group_name or '（没填）'}（{_field('group_id')}）"
             if show_source
-            else "（就是本群，正文里不要提来源）"
+            else ""
         ),
     )
 

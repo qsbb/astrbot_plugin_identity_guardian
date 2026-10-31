@@ -45,13 +45,19 @@ class JoinNotificationService:
         def _val(value: Any) -> str:
             return str(value or "").strip() or "没填"
 
+        question = _val(request.question)
+        answer = _val(request.answer)
         lines = [
-            f"有人申请进群：{_val(request.user_id)}",
+            "有人申请进群",
             f"昵称 {_val(request.nickname)}｜等级 {_val(request.level)}",
-            f"问题：{_val(request.question)}",
         ]
-        if include_answer:
-            lines.append(f"他答：{_val(request.answer)}")
+        # 问题和答案都空时合成一句，比连着两行「没填」像人话。
+        if question == "没填" and (not include_answer or answer == "没填"):
+            lines.append("问题没答")
+        else:
+            lines.append(f"问题：{question}")
+            if include_answer:
+                lines.append(f"他答：{answer}")
         if show_source:
             lines.append(
                 f"来自「{source_group_name or '未知群名'}」（{request.group_id}）"

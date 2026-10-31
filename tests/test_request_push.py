@@ -220,13 +220,16 @@ def test_render_natural_uses_llm_caller_and_asks_for_opinion(tmp_path):
     assert message == "门口有人，引用这条说一声"
     assert len(prompts) == 1
     prompt = prompts[0]
-    # natural 提示词只给全部事实 + 场景，让 AI 按人设自由措辞
-    for fact in ("小明", "200", "16", "口令？", "溪流", "申请群", "100"):
+    # natural 提示词只给素材 + 场景，让 AI 按人设自由措辞
+    for fact in ("小明", "16", "口令？", "溪流", "申请群", "100"):
         assert fact in prompt
-    # 唯一硬性要求：引导管理员引用本条消息回复同意或拒绝
-    assert "引用本条消息回复同意或拒绝" in prompt
-    # 不再限制字段罗列方式/措辞，也不强制旧版 200 字上限
-    assert "不超过 200 字" not in prompt
+    # QQ 号不进提示词：群消息里不需要它，露出来反而像工单
+    assert "200" not in prompt
+    # 唯一硬性要求：让管理员知道要「引用」这条消息
+    assert "引用" in prompt
+    # 不写固定句式、不给示例，也不强制字数上限
+    for banned in ("不超过 200 字", "反例", "好例子"):
+        assert banned not in prompt
 
 
 @pytest.mark.parametrize("llm_result", ["", "   ", None])
@@ -618,9 +621,9 @@ def test_prompt_omits_source_group_when_show_source_false():
     hidden = build_push_message_prompt(request, "不要摸鱼了喵", show_source=False)
 
     assert "不要摸鱼了喵" in shown and "100" in shown
+    # 隐藏时整行删掉，不留任何"来源"字样——留标记反而提示模型去提。
     assert "不要摸鱼了喵" not in hidden
-    # 不能把「不提来源」变成模型要去提的元素，得明确说这就是本群。
-    assert "就是本群" in hidden
+    assert "来源" not in hidden
 
 
 def test_preview_hides_source_group_when_target_is_own_group(tmp_path):
